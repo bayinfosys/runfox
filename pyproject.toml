@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools_scm]
+version_file = "runfox/_version.py"
+fallback_version = "v0.0.0"
+
+[tool.coverage.run]
+omit = ["runfox/_version.py"]
+
+[tool.mutmut]
+paths_to_mutate = ["runfox/"]
+pytest_add_cli_args_test_selection = ["tests/", "--ignore=tests/test_run_examples.py"]
+ignore_list = [
+    "runfox.backend.base.xBackendx_make_workflow_id",
+    "runfox.backend.base.xBackendx_make_execution_id",
+    "runfox.backend.base.xBackendx_now_iso",
+]
