@@ -8,7 +8,6 @@ setup(
     },
     description="Orchestration and execution engine",
     long_description=open("README.md", encoding="utf-8").read(),
-    long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Ed Grundy",
     author_email="ed@bayis.co.uk",
