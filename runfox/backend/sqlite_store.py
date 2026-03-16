@@ -62,8 +62,8 @@ class SqliteStore(Store):
     def _row_to_record(self, row: sqlite3.Row) -> WorkflowRecord:
         raw_steps = json.loads(row["steps"])
         steps = {
-            sid: StepRecord(
-                id=sid,
+            op: StepRecord(
+                op=op,
                 status=StepStatus(s["status"]),
                 output=s.get("output"),
                 start_time=s.get("start_time"),
@@ -71,7 +71,7 @@ class SqliteStore(Store):
                 host=s.get("host"),
                 run_id=s.get("run_id", 0),
             )
-            for sid, s in raw_steps.items()
+            for op, s in raw_steps.items()
         }
         return WorkflowRecord(
             workflow_id=row["workflow_id"],
@@ -108,7 +108,7 @@ class SqliteStore(Store):
                     json.dumps(record.inputs),
                     json.dumps(record.state),
                     json.dumps(
-                        {sid: dataclasses.asdict(s) for sid, s in record.steps.items()}
+                        {op: dataclasses.asdict(s) for op, s in record.steps.items()}
                     ),
                     record.status,
                     json.dumps(record.outcome) if record.outcome is not None else None,

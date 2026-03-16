@@ -32,11 +32,11 @@ from runfox.backend import Backend, SqliteStore
 SPEC = """
 name: fibonacci_iterative
 steps:
-  - id: seed
-    fn: fib_seed
+  - op: seed
+    label: initial response for 0,1
 
-  - id: iterate
-    fn: fib_step
+  - op: iterate
+    label: fibonacci step function
     depends_on: [seed]
     input:
       a: {"var": "state.fib_n"}
@@ -62,13 +62,13 @@ outputs:
 # ---------------------------------------------------------------------------
 
 
-def execute(fn: str, inputs: dict) -> dict:
-    if fn == "fib_seed":
+def execute(op: str, inputs: dict) -> dict:
+    if op == "seed":
         return {"fib_n": 0, "fib_n1": 1}
-    if fn == "fib_step":
+    if op == "step":
         a, b = inputs["a"], inputs["b"]
         return {"fib_n": b, "fib_n1": a + b}
-    raise ValueError(f"Unknown fn: {fn!r}")
+    raise ValueError(f"Unknown op: {op!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -88,10 +88,10 @@ def worker(backend: Backend, stop: threading.Event) -> None:
             continue
         for job in jobs:
             try:
-                output = execute(job.fn, job.inputs)
+                output = execute(job.op, job.inputs)
             except Exception as exc:
                 output = {"error": str(exc), "ok": False}
-            backend.submit_result(job.workflow_execution_id, job.step_id, output)
+            backend.submit_result(job.workflow_execution_id, job.op, output)
 
 
 # ---------------------------------------------------------------------------

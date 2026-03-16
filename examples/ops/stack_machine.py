@@ -41,26 +41,26 @@ from runfox.backend import InMemoryStore, InProcessRunner, InProcessWorker
 SPEC = """
 name: stack_machine
 steps:
-  - id: init
-    fn: init
+  - op: init
+    label: init
     input:
       ops: {"var": "input.ops"}
 
-  - id: fetch
-    fn: fetch
+  - op: fetch
+    label: fetch
     depends_on: [init]
     input:
       ops_queue: {"var": "state.ops_queue"}
 
-  - id: execute
-    fn: execute_op
+  - op: execute
+    label: execute_op
     depends_on: [fetch]
     input:
       op:    {"var": "state.current_op"}
       stack: {"var": "state.stack"}
 
-  - id: check
-    fn: check
+  - op: check
+    label: check
     depends_on: [execute]
     input:
       ops_queue: {"var": "state.ops_queue"}
@@ -118,8 +118,8 @@ def apply_op(op_dict, stack):
     return stack
 
 
-def execute(fn, inputs):
-    if fn == "init":
+def execute(op, inputs):
+    if op == "init":
         ops = (
             parse_ops(inputs["ops"])
             if isinstance(inputs["ops"], str)
@@ -127,25 +127,25 @@ def execute(fn, inputs):
         )
         return {"stack": [], "ops_queue": ops, "current_op": None, "result": None}
 
-    if fn == "fetch":
+    if op == "fetch":
         queue = list(inputs["ops_queue"])
         op = queue.pop(0)
         return {"current_op": op, "ops_queue": queue}
 
-    if fn == "execute_op":
+    if op == "execute":
         stack = apply_op(inputs["op"], inputs["stack"])
         result = stack[-1] if stack else None
         return {"stack": stack, "result": result}
 
-    if fn == "check":
+    if op == "check":
         queue = inputs["ops_queue"]
         return {"ops_remaining": len(queue)}
 
-    raise ValueError(f"Unknown fn: {fn!r}")
+    raise ValueError(f"Unknown op: {op!r}")
 
 
 def on_state_change(workflow_id, previous, current, event):
-    if event is None or event.fn != "execute_op":
+    if event is None or event.op != "execute_op":
         return
     if "stack" not in current:
         return

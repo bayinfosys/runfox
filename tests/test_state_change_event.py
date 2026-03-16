@@ -3,7 +3,7 @@ test_state_change_events.py -- StateChangeEvent callback and input satisfaction 
 
 Covers:
   - on_state_change receives correct event on each merge
-  - event.step_id and event.fn identify the triggering step
+  - event.op and event.op identify the triggering step
   - event is None when merge_workflow_state is called outside a step result
   - _assert_inputs_satisfied raises on unresolved steps.X references
   - _assert_inputs_satisfied raises on unknown step references
@@ -60,29 +60,18 @@ class TestStateChangeEventCallback:
         for event in events:
             assert isinstance(event, StateChangeEvent)
 
-    def test_event_step_id_is_valid_step(self):
+    def test_event_op_is_valid_step(self):
         backend, events, _ = _collecting_backend(fib_executor)
         rfx.Workflow.from_dict(FIB_SPEC, backend).run()
         valid_ids = {"f0", "f1", "f2", "f3", "f4"}
         for event in events:
-            assert event.step_id in valid_ids
+            assert event.op in valid_ids
 
     def test_event_fn_matches_step(self):
         backend, events, _ = _collecting_backend(fib_executor)
         rfx.Workflow.from_dict(FIB_SPEC, backend).run()
-        # seed steps have fn=seed, add steps have fn=add
         for event in events:
-            assert event.fn in ("seed", "add")
-
-    def test_event_fn_matches_step_id(self):
-        backend, events, _ = _collecting_backend(fib_executor)
-        rfx.Workflow.from_dict(FIB_SPEC, backend).run()
-        fn_by_step = {e.step_id: e.fn for e in events}
-        assert fn_by_step["f0"] == "seed"
-        assert fn_by_step["f1"] == "seed"
-        assert fn_by_step["f2"] == "add"
-        assert fn_by_step["f3"] == "add"
-        assert fn_by_step["f4"] == "add"
+            assert event.op in ("f0", "f1", "f2", "f3", "f4")
 
     def test_one_event_per_step(self):
         backend, events, _ = _collecting_backend(fib_executor)
@@ -90,10 +79,10 @@ class TestStateChangeEventCallback:
         # FIB_SPEC has 5 steps; each produces one merge
         assert len(events) == 5
 
-    def test_event_step_ids_cover_all_steps(self):
+    def test_event_ops_cover_all_steps(self):
         backend, events, _ = _collecting_backend(fib_executor)
         rfx.Workflow.from_dict(FIB_SPEC, backend).run()
-        assert {e.step_id for e in events} == {"f0", "f1", "f2", "f3", "f4"}
+        assert {e.op for e in events} == {"f0", "f1", "f2", "f3", "f4"}
 
     def test_previous_and_current_states_are_dicts(self):
         backend, _, states = _collecting_backend(fib_executor)
@@ -127,24 +116,24 @@ class TestStateChangeEventCallback:
         backend.merge_workflow_state(wf_id, None)
         assert events == []
 
-    def test_event_filtering_by_fn(self):
-        # Demonstrates the intended use: callback filters by event.fn
+    def test_event_filtering_by_op(self):
+        # Demonstrates the intended use: callback filters by event.op
         # to respond only to specific step types.
         add_events = []
 
         def callback(wf_exec_id, previous, current, event):
-            if event is not None and event.fn == "add":
-                add_events.append(event.step_id)
+            if event is not None and event.op == "add":
+                add_events.append(event.op)
 
         backend = Backend(executor=fib_executor, on_state_change=callback)
         rfx.Workflow.from_dict(FIB_SPEC, backend).run()
         assert set(add_events) == {"f2", "f3", "f4"}
 
-    def test_event_filtering_by_step_id(self):
+    def test_event_filtering_by_op(self):
         seen = []
 
         def callback(wf_exec_id, previous, current, event):
-            if event is not None and event.step_id == "f4":
+            if event is not None and event.op == "f4":
                 seen.append(current.get("value"))
 
         backend = Backend(executor=fib_executor, on_state_change=callback)
@@ -167,23 +156,22 @@ class TestAssertInputsSatisfied:
         """
         calls = []
 
-        def executor(fn, inputs):
-            calls.append(fn)
-            if fn == "a":
+        def executor(op, inputs):
+            calls.append(op)
+            if op == "a":
                 return {"value": 1}
-            if fn == "b":
+            if op == "b":
                 return {"value": inputs.get("v")}
-            raise ValueError(fn)
+            raise ValueError(op)
 
         # Spec where b incorrectly declares no depends_on but references a.
         # Without the guard this silently passes None.
         spec = {
             "name": "bad-dep",
             "steps": [
-                {"id": "a", "fn": "a"},
+                {"op": "a"},
                 {
-                    "id": "b",
-                    "fn": "b",
+                    "op": "b",
                     # depends_on intentionally omitted -- this is the error
                     "input": {"v": {"var": "steps.a.output.value"}},
                 },
@@ -200,14 +188,13 @@ class TestAssertInputsSatisfied:
             "name": "unknown-ref",
             "steps": [
                 {
-                    "id": "a",
-                    "fn": "a",
+                    "op": "a",
                     "input": {"v": {"var": "steps.nonexistent.output.value"}},
                 },
             ],
             "outputs": {},
         }
-        backend = Backend(executor=lambda fn, inputs: {"v": 1})
+        backend = Backend(executor=lambda op, inputs: {"v": 1})
         wf = rfx.Workflow.from_dict(spec, backend)
         with pytest.raises(ValueError, match="nonexistent"):
             wf.run()
@@ -215,20 +202,19 @@ class TestAssertInputsSatisfied:
     def test_does_not_raise_on_state_var(self):
         """state.* references are not subject to the steps.* guard."""
 
-        def executor(fn, inputs):
-            if fn == "write":
+        def executor(op, inputs):
+            if op == "w":
                 return {"total": 10}
-            if fn == "read":
+            if op == "r":
                 return {"got": inputs["v"]}
-            raise ValueError(fn)
+            raise ValueError(op)
 
         spec = {
             "name": "state-ref",
             "steps": [
-                {"id": "w", "fn": "write"},
+                {"op": "w"},
                 {
-                    "id": "r",
-                    "fn": "read",
+                    "op": "r",
                     "depends_on": ["w"],
                     "input": {"v": {"var": "state.total"}},
                 },
@@ -243,7 +229,7 @@ class TestAssertInputsSatisfied:
         spec = {
             "name": "input-ref",
             "steps": [
-                {"id": "s", "fn": "echo", "input": {"v": {"var": "input.name"}}},
+                {"op": "s", "input": {"v": {"var": "input.name"}}},
             ],
             "outputs": {"out": {"var": "steps.s.output.out"}},
         }
@@ -257,7 +243,7 @@ class TestAssertInputsSatisfied:
         spec = {
             "name": "literal",
             "steps": [
-                {"id": "s", "fn": "f", "input": {"v": 42}},
+                {"op": "s", "input": {"v": 42}},
             ],
             "outputs": {"v": {"var": "steps.s.output.v"}},
         }
@@ -271,10 +257,9 @@ class TestAssertInputsSatisfied:
         spec = {
             "name": "ok-dep",
             "steps": [
-                {"id": "a", "fn": "a"},
+                {"op": "a"},
                 {
-                    "id": "b",
-                    "fn": "b",
+                    "op": "b",
                     "depends_on": ["a"],
                     "input": {"v": {"var": "steps.a.output.value"}},
                 },
@@ -282,12 +267,12 @@ class TestAssertInputsSatisfied:
             "outputs": {"v": {"var": "steps.b.output.v"}},
         }
 
-        def executor(fn, inputs):
-            if fn == "a":
+        def executor(op, inputs):
+            if op == "a":
                 return {"value": 7}
-            if fn == "b":
+            if op == "b":
                 return {"v": inputs["v"]}
-            raise ValueError(fn)
+            raise ValueError(op)
 
         result = rfx.Workflow.from_dict(spec, Backend(executor=executor)).run()
         assert result.outcome["v"] == 7

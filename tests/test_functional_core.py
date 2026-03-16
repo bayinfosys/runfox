@@ -39,29 +39,29 @@ class TestFindDispatchableSteps:
     def test_single_ready_step_no_deps(self):
         record = make_record({"a": READY})
         result = _find_dispatchable_steps(record)
-        assert [s["id"] for s in result] == ["a"]
+        assert [s["op"] for s in result] == ["a"]
 
     def test_multiple_ready_steps_no_deps(self):
         record = make_record({"a": READY, "b": READY, "c": READY})
-        ids = {s["id"] for s in _find_dispatchable_steps(record)}
-        assert ids == {"a", "b", "c"}
+        ops = {s["op"] for s in _find_dispatchable_steps(record)}
+        assert ops == {"a", "b", "c"}
 
     def test_step_with_incomplete_dep_not_dispatchable(self):
         record = make_record(
             {"a": READY, "b": READY},
             deps={"b": ["a"]},
         )
-        ids = {s["id"] for s in _find_dispatchable_steps(record)}
-        assert ids == {"a"}
-        assert "b" not in ids
+        ops = {s["op"] for s in _find_dispatchable_steps(record)}
+        assert ops == {"a"}
+        assert "b" not in ops
 
     def test_step_with_complete_dep_is_dispatchable(self):
         record = make_record(
             {"a": COMPLETE, "b": READY},
             deps={"b": ["a"]},
         )
-        ids = {s["id"] for s in _find_dispatchable_steps(record)}
-        assert ids == {"b"}
+        ops = {s["op"] for s in _find_dispatchable_steps(record)}
+        assert ops == {"b"}
 
     def test_in_progress_step_not_dispatchable(self):
         record = make_record({"a": IN_PROGRESS})
@@ -77,33 +77,33 @@ class TestFindDispatchableSteps:
 
     def test_retry_step_is_dispatchable(self):
         record = make_record({"a": RETRY})
-        ids = {s["id"] for s in _find_dispatchable_steps(record)}
-        assert ids == {"a"}
+        ops = {s["op"] for s in _find_dispatchable_steps(record)}
+        assert ops == {"a"}
 
     def test_retry_step_with_incomplete_dep_not_dispatchable(self):
         record = make_record(
             {"a": READY, "b": RETRY},
             deps={"b": ["a"]},
         )
-        ids = {s["id"] for s in _find_dispatchable_steps(record)}
-        assert "b" not in ids
+        ops = {s["op"] for s in _find_dispatchable_steps(record)}
+        assert "b" not in ops
 
     def test_multiple_deps_all_must_be_complete(self):
         record = make_record(
             {"a": COMPLETE, "b": READY, "c": READY},
             deps={"c": ["a", "b"]},
         )
-        ids = {s["id"] for s in _find_dispatchable_steps(record)}
-        assert "c" not in ids
-        assert "b" in ids
+        ops = {s["op"] for s in _find_dispatchable_steps(record)}
+        assert "c" not in ops
+        assert "b" in ops
 
     def test_chain_only_first_dispatchable(self):
         record = make_record(
             {"a": READY, "b": READY, "c": READY},
             deps={"b": ["a"], "c": ["b"]},
         )
-        ids = {s["id"] for s in _find_dispatchable_steps(record)}
-        assert ids == {"a"}
+        ops = {s["op"] for s in _find_dispatchable_steps(record)}
+        assert ops == {"a"}
 
     def test_empty_steps(self):
         record = make_record({})
@@ -163,7 +163,7 @@ class TestResolveInputs:
             step_inputs={"b": {"v": {"var": "steps.a.output.value"}}},
             deps={"b": ["a"]},
         )
-        step_spec = next(s for s in record.spec["steps"] if s["id"] == "b")
+        step_spec = next(s for s in record.spec["steps"] if s["op"] == "b")
         assert _resolve_inputs(step_spec, record) == {"v": 7}
 
     def test_state_var(self):
@@ -382,7 +382,7 @@ class TestAssertInputsSatisfied:
             step_inputs={"b": {"v": {"var": "steps.a.output.value"}}},
             deps={"b": ["a"]},
         )
-        step_spec = next(s for s in record.spec["steps"] if s["id"] == "b")
+        step_spec = next(s for s in record.spec["steps"] if s["op"] == "b")
         _assert_inputs_satisfied(step_spec, record)  # must not raise
 
     def test_raises_for_ready_dep(self):
@@ -390,7 +390,7 @@ class TestAssertInputsSatisfied:
             {"a": READY, "b": READY},
             step_inputs={"b": {"v": {"var": "steps.a.output.value"}}},
         )
-        step_spec = next(s for s in record.spec["steps"] if s["id"] == "b")
+        step_spec = next(s for s in record.spec["steps"] if s["op"] == "b")
         with pytest.raises(ValueError, match="step 'a'"):
             _assert_inputs_satisfied(step_spec, record)
 
@@ -399,7 +399,7 @@ class TestAssertInputsSatisfied:
             {"a": IN_PROGRESS, "b": READY},
             step_inputs={"b": {"v": {"var": "steps.a.output.value"}}},
         )
-        step_spec = next(s for s in record.spec["steps"] if s["id"] == "b")
+        step_spec = next(s for s in record.spec["steps"] if s["op"] == "b")
         with pytest.raises(ValueError, match="step 'a'"):
             _assert_inputs_satisfied(step_spec, record)
 

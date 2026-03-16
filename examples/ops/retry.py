@@ -20,11 +20,11 @@ SPEC = """
 name: retry
 
 steps:
-  - id: seed
-    fn: seed
+  - op: seed
+    label: seed
 
-  - id: iterate
-    fn: iterate
+  - op: iterate
+    label: iterate
     depends_on: [seed]
     max_attempts: 5
     input:
@@ -35,10 +35,10 @@ outputs:
 """
 
 
-def execute(fn, inputs):
-    if fn == "seed":
+def execute(op, inputs):
+    if op == "seed":
         return {"total": 0}
-    if fn == "iterate":
+    if op == "iterate":
         return {"total": inputs["current"] + 10}
 
 

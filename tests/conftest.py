@@ -8,8 +8,13 @@ import tempfile
 
 import pytest
 
-from runfox.backend import (Backend, InMemoryStore, InProcessRunner,
-                            InProcessWorker, SqliteStore)
+from runfox.backend import (
+    Backend,
+    InMemoryStore,
+    InProcessRunner,
+    InProcessWorker,
+    SqliteStore,
+)
 from runfox.backend.base import StepRecord, WorkflowRecord
 from runfox.status import StepStatus, WorkflowStatus
 
@@ -18,28 +23,28 @@ from runfox.status import StepStatus, WorkflowStatus
 # ---------------------------------------------------------------------------
 
 
-def fib_executor(fn, inputs):
-    if fn == "seed":
+def fib_executor(op, inputs):
+    if op in ("f0", "f1"):
         return {"value": inputs["value"]}
-    if fn == "add":
+    if op in ("f2", "f3", "f4", "f5", "f6"):
         return {"value": inputs["a"] + inputs["b"]}
-    raise ValueError(fn)
+    raise ValueError(op)
 
 
-def counting_executor(fn, inputs):
-    if fn == "count_r":
+def counting_executor(op, inputs):
+    if op == "count":
         return {"count": inputs["text"].lower().count("r")}
-    if fn == "identity":
+    if op == "identity":
         return inputs
-    raise ValueError(fn)
+    raise ValueError(op)
 
 
-def halting_executor(fn, inputs):
-    if fn == "score":
+def halting_executor(op, inputs):
+    if op == "check":
         return inputs
-    if fn == "identity":
+    if op == "process":
         return inputs
-    raise ValueError(fn)
+    raise ValueError(op)
 
 
 # ---------------------------------------------------------------------------
@@ -49,11 +54,10 @@ def halting_executor(fn, inputs):
 FIB_SPEC = {
     "name": "fibonacci",
     "steps": [
-        {"id": "f0", "fn": "seed", "input": {"value": 0}},
-        {"id": "f1", "fn": "seed", "input": {"value": 1}},
+        {"op": "f0", "input": {"value": 0}},
+        {"op": "f1", "input": {"value": 1}},
         {
-            "id": "f2",
-            "fn": "add",
+            "op": "f2",
             "depends_on": ["f0", "f1"],
             "input": {
                 "a": {"var": "steps.f0.output.value"},
@@ -61,8 +65,7 @@ FIB_SPEC = {
             },
         },
         {
-            "id": "f3",
-            "fn": "add",
+            "op": "f3",
             "depends_on": ["f1", "f2"],
             "input": {
                 "a": {"var": "steps.f1.output.value"},
@@ -70,8 +73,7 @@ FIB_SPEC = {
             },
         },
         {
-            "id": "f4",
-            "fn": "add",
+            "op": "f4",
             "depends_on": ["f2", "f3"],
             "input": {
                 "a": {"var": "steps.f2.output.value"},
@@ -86,8 +88,7 @@ HALT_SPEC = {
     "name": "halt-test",
     "steps": [
         {
-            "id": "check",
-            "fn": "score",
+            "op": "check",
             "input": {"unsafe": 0.9},
             "branch": [
                 {
@@ -98,8 +99,7 @@ HALT_SPEC = {
             ],
         },
         {
-            "id": "process",
-            "fn": "identity",
+            "op": "process",
             "depends_on": ["check"],
             "input": {"text": "hello"},
         },
@@ -111,8 +111,7 @@ BRANCH_PASS_SPEC = {
     "name": "branch-pass",
     "steps": [
         {
-            "id": "check",
-            "fn": "score",
+            "op": "check",
             "input": {"unsafe": 0.1},
             "branch": [
                 {
@@ -123,8 +122,7 @@ BRANCH_PASS_SPEC = {
             ],
         },
         {
-            "id": "process",
-            "fn": "identity",
+            "op": "process",
             "depends_on": ["check"],
             "input": {"text": "hello"},
         },
@@ -140,40 +138,33 @@ BRANCH_PASS_SPEC = {
 FIB6_YAML = """
 name: fibonacci_6
 steps:
-  - id: f0
-    fn: seed
+  - op: f0
     input:
       value: 0
-  - id: f1
-    fn: seed
+  - op: f1
     input:
       value: 1
-  - id: f2
-    fn: add
+  - op: f2
     depends_on: [f0, f1]
     input:
       a: {"var": "steps.f0.output.value"}
       b: {"var": "steps.f1.output.value"}
-  - id: f3
-    fn: add
+  - op: f3
     depends_on: [f1, f2]
     input:
       a: {"var": "steps.f1.output.value"}
       b: {"var": "steps.f2.output.value"}
-  - id: f4
-    fn: add
+  - op: f4
     depends_on: [f2, f3]
     input:
       a: {"var": "steps.f2.output.value"}
       b: {"var": "steps.f3.output.value"}
-  - id: f5
-    fn: add
+  - op: f5
     depends_on: [f3, f4]
     input:
       a: {"var": "steps.f3.output.value"}
       b: {"var": "steps.f4.output.value"}
-  - id: f6
-    fn: add
+  - op: f6
     depends_on: [f4, f5]
     input:
       a: {"var": "steps.f4.output.value"}
@@ -185,8 +176,7 @@ outputs:
 SET_LOOP_YAML = """
 name: set-loop
 steps:
-  - id: count
-    fn: increment
+  - op: count
     input:
       n: {"var": "state.n"}
     branch:
@@ -217,7 +207,7 @@ def make_record(
     """
     Build a minimal WorkflowRecord for pure function tests.
 
-    steps       -- dict[str, StepStatus] mapping step_id to its current status
+    steps       -- dict[str, StepStatus] mapping op to its current status
     deps        -- dict[str, list[str]] depends_on per step
     state       -- shared state accumulator dict
     inputs      -- workflow-level inputs dict
@@ -235,25 +225,25 @@ def make_record(
     branches = branches or {}
 
     spec_steps = []
-    for step_id in steps:
-        step_spec = {"id": step_id, "fn": step_id}
-        if step_id in deps:
-            step_spec["depends_on"] = deps[step_id]
-        if step_id in step_inputs:
-            step_spec["input"] = step_inputs[step_id]
-        if step_id in branches:
-            step_spec["branch"] = branches[step_id]
+    for op in steps:
+        step_spec = {"op": op}
+        if op in deps:
+            step_spec["depends_on"] = deps[op]
+        if op in step_inputs:
+            step_spec["input"] = step_inputs[op]
+        if op in branches:
+            step_spec["branch"] = branches[op]
         spec_steps.append(step_spec)
 
     spec = {"name": "test", "steps": spec_steps, "outputs": spec_outputs}
 
     step_records = {
-        step_id: StepRecord(
-            id=step_id,
+        op: StepRecord(
+            op=op,
             status=status,
-            output=step_outputs.get(step_id),
+            output=step_outputs.get(op),
         )
-        for step_id, status in steps.items()
+        for op, status in steps.items()
     }
 
     return WorkflowRecord(

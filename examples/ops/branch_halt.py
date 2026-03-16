@@ -18,8 +18,7 @@ SPEC = """
 name: branch_halt
 
 steps:
-  - id: score
-    fn: score
+  - op: score
     input:
       value: {"var": "input.value"}
     branch:
@@ -29,8 +28,7 @@ steps:
           status: rejected
           reason: score too high
 
-  - id: accept
-    fn: accept
+  - op: accept
     depends_on: [score]
     input:
       score: {"var": "steps.score.output.score"}
@@ -40,10 +38,10 @@ outputs:
 """
 
 
-def execute(fn, inputs):
-    if fn == "score":
+def execute(op, inputs):
+    if op == "score":
         return {"score": inputs["value"]}
-    if fn == "accept":
+    if op == "accept":
         return {"status": "accepted"}
 
 

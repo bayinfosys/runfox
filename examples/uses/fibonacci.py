@@ -20,46 +20,46 @@ description: >
   the two preceding values and is submitted as soon as both are complete.
 
 steps:
-  - id: f0
-    fn: seed
+  - op: f0
+    label: seed
     input:
       value: 0
 
-  - id: f1
-    fn: seed
+  - op: f1
+    label: seed
     input:
       value: 1
 
-  - id: f2
-    fn: add
+  - op: f2
+    label: add
     depends_on: [f0, f1]
     input:
       a: {"var": "steps.f0.output.value"}
       b: {"var": "steps.f1.output.value"}
 
-  - id: f3
-    fn: add
+  - op: f3
+    label: add
     depends_on: [f1, f2]
     input:
       a: {"var": "steps.f1.output.value"}
       b: {"var": "steps.f2.output.value"}
 
-  - id: f4
-    fn: add
+  - op: f4
+    label: add
     depends_on: [f2, f3]
     input:
       a: {"var": "steps.f2.output.value"}
       b: {"var": "steps.f3.output.value"}
 
-  - id: f5
-    fn: add
+  - op: f5
+    label: add
     depends_on: [f3, f4]
     input:
       a: {"var": "steps.f3.output.value"}
       b: {"var": "steps.f4.output.value"}
 
-  - id: f6
-    fn: add
+  - op: f6
+    label: add
     depends_on: [f4, f5]
     input:
       a: {"var": "steps.f4.output.value"}
@@ -72,19 +72,19 @@ outputs:
 # ---------------------------------------------------------------------------
 # Executor
 #
-# Receives (fn, inputs), returns output dict.
+# Receives (label, inputs), returns output dict.
 # No runfox imports. No knowledge of workflow structure.
 # On AWS this would be an ECS task writing to DynamoDB.
 # ---------------------------------------------------------------------------
 
 
-def execute(fn: str, inputs: dict) -> dict:
-    print(f"  execute: fn={fn!r}  inputs={inputs}")
-    if fn == "seed":
+def execute(label: str, inputs: dict) -> dict:
+    print(f"  execute: label={label!r}  inputs={inputs}")
+    if label == "seed":
         return {"value": inputs["value"]}
-    if fn == "add":
+    if label == "add":
         return {"value": inputs["a"] + inputs["b"]}
-    raise ValueError(f"Unknown fn: {fn!r}")
+    raise ValueError(f"Unknown label: {label!r}")
 
 
 # ---------------------------------------------------------------------------

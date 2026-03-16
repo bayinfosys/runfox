@@ -31,7 +31,7 @@ External scripts, Lambda handlers, or SQS consumers for remote use.
 Calls the executor; calls `submit_work_result`. The only layer aware
 of both sides.
 
-**Executor** -- plain `(fn, inputs) -> dict` callables. No runfox
+**Executor** -- plain `(op, inputs) -> dict` callables. No runfox
 imports. Business logic only.
 
 The executor never crosses upward into the transport layer. `Backend`
@@ -91,16 +91,16 @@ Owns the job queue interface.
 
   `dispatch(workflow_execution_id, jobs)` -- enqueues jobs.
   `gather(workflow_execution_id)` -- returns completed
-  `(step_id, output)` pairs. Always returns immediately; empty list if no results ready.
+  `(op, output)` pairs. Always returns immediately; empty list if no results ready.
   `list_pending_jobs()` -- non-destructive snapshot of all pending jobs. Safe for diagnostics; does not alter queue state.
   `take_pending_jobs()` -- consume and return all pending jobs. Called by worker harnesses; returned jobs will not be returned by a subsequent call.
-  `submit_work_result(workflow_execution_id, step_id, output)` -- writes a result back from a worker.
+  `submit_work_result(workflow_execution_id, op, output)` -- writes a result back from a worker.
 
 Implementations: `InProcessRunner`, `SqliteRunner`.
 
 ### Worker harness
 
-Sits between the runner and the executor. Calls `list_pending_jobs()`,
+Sits between the runner and the executor. Calls `take_pending_jobs()`,
 calls the executor, calls `submit_work_result()`.
 
 `InProcessWorker` is provided for local and test use:
@@ -125,12 +125,14 @@ original -- they are interchangeable.
 
 A plain callable with no runfox dependency:
 ```python
-def execute(fn: str, inputs: dict) -> dict:
+def execute(op: str, inputs: dict) -> dict:
     ...
 ```
 
-Receives a function name and a resolved input dict. Returns an output
-dict. Deployable and testable independently of the rest of the stack.
+Receives the step dispatch token and a resolved input dict. Returns an
+output dict. The dispatch token is the `op` field from the workflow spec;
+the executor switches on it to determine what work to perform.
+Deployable and testable independently of the rest of the stack.
 
 ### Workflow and execution identifiers
 
@@ -145,9 +147,9 @@ The store key is `workflow_execution_id`:
 `{workflow_id}#{execution_id}`. This is `wf.id` and what
 `Workflow.resume()` accepts.
 ```python
-backend.workflow_execution_id(record)             # store key
-backend.step_key(wf_exec_id, step_id)             # step within execution
-backend.step_run_key(wf_exec_id, step_id, run_id) # one dispatch of a step
+backend.workflow_execution_id(record)           # store key
+backend.step_key(wf_exec_id, op)                # step within execution
+backend.step_run_key(wf_exec_id, op, run_id)    # one dispatch of a step
 ```
 
 ---
@@ -167,25 +169,23 @@ from runfox.backend import InMemoryStore, InProcessRunner, InProcessWorker
 SPEC = """
 name: example
 steps:
-  - id: greet
-    fn: make_greeting
+  - op: make_greeting
     input:
       name: {"var": "input.name"}
 
-  - id: shout
-    fn: upper
-    depends_on: [greet]
+  - op: shout
+    depends_on: [make_greeting]
     input:
-      text: {"var": "steps.greet.output.text"}
+      text: {"var": "steps.make_greeting.output.text"}
 
 outputs:
   message: {"var": "steps.shout.output.text"}
 """
 
-def execute(fn, inputs):
-    if fn == "make_greeting":
+def execute(op, inputs):
+    if op == "make_greeting":
         return {"text": f"hello, {inputs['name']}"}
-    if fn == "upper":
+    if op == "shout":
         return {"text": inputs["text"].upper()}
 
 runner  = InProcessRunner()
@@ -214,21 +214,24 @@ wf = rfx.Workflow.from_yaml(spec, backend, inputs={"name": "world"})
 
 Each step declares:
 
-- `id` -- unique identifier within the workflow
-- `fn` -- the function name passed to the executor
+- `op` -- unique identifier within the workflow and the dispatch token
+  passed to the executor. The executor switches on this value to
+  determine what work to perform.
+- `label` -- optional human description of the step, analogous to a
+  docstring. Never read by runfox.
 - `input` -- input values; literals or JSON Logic expressions
-- `depends_on` -- step IDs that must complete before this step runs
+- `depends_on` -- step ops that must complete before this step runs
 - `branch` -- conditional exits evaluated after the step completes
 - `max_attempts` -- error-recovery retry budget (default: 1)
 
 ### Input references
 ```yaml
 input:
-  threshold: 0.7                                    # literal
-  text:      {"var": "steps.caption.output.text"}   # prior step output
-  image:     {"var": "input.image"}                 # workflow input
-  total:     {"var": "state.running_total"}          # shared accumulator
-  scores:    {"vars": "steps[*].output.score"}       # multi-value
+  threshold: 0.7                                       # literal
+  text:      {"var": "steps.caption.output.text"}      # prior step output
+  image:     {"var": "input.image"}                    # workflow input
+  total:     {"var": "state.running_total"}             # shared accumulator
+  scores:    {"vars": "steps[*].output.score"}          # multi-value
 ```
 
 ### Branch conditions
@@ -244,11 +247,16 @@ Three actions: `halt`, `complete`, `{set: "steps.X.status", value: ready}`.
 `halt` terminates the workflow immediately; the `result` payload becomes
 the outcome.
 
+When a `set` action fires, the named steps and all steps that
+transitively depend on them are reset to ready. This clears stale
+outputs from any downstream steps before the scheduler re-dispatches.
+
 ### Data-driven loops
 ```yaml
 steps:
-  - id: iterate
-    fn: fib_step
+  - op: seed
+
+  - op: iterate
     depends_on: [seed]
     input:
       a: {"var": "state.fib_n"}
@@ -282,8 +290,8 @@ outputs:
 | `Dispatch(jobs)` | Steps claimed; `jobs` is a list of `DispatchJob` |
 | `Pending()` | In-progress steps exist; nothing new is ready yet |
 
-Each `DispatchJob` carries `workflow_execution_id`, `step_id`, `fn`,
-`inputs`, and `run_id`.
+Each `DispatchJob` carries `workflow_execution_id`, `op`, `inputs`, and
+`run_id`. `op` is the dispatch token passed to the executor.
 
 `wf.on_step_result()` returns `Halt` if a branch fires, `Pending` if
 the step has remaining retry attempts, or `None` on normal completion.
@@ -353,9 +361,9 @@ def start_workflow(spec, inputs):
         for job in backend.take_pending_jobs():
             my_queue.send(job)
 
-def handle_result(workflow_execution_id, step_id, output):
+def handle_result(workflow_execution_id, op, output):
     wf          = rfx.Workflow.resume(workflow_execution_id, backend)
-    step_result = wf.on_step_result(step_id, output)
+    step_result = wf.on_step_result(op, output)
     if isinstance(step_result, rfx.Halt):
         return
     result = wf.advance()
@@ -372,9 +380,9 @@ def handle_result(workflow_execution_id, step_id, output):
 `Backend` accepts an optional `on_state_change` callback fired after
 every `merge_workflow_state` call:
 ```python
-def on_state_change(workflow_execution_id, previous_state, new_state):
-    if "stack" in new_state:
-        print(new_state["stack"])
+def on_state_change(workflow_execution_id, previous_state, new_state, event):
+    if event is not None and event.op == "score":
+        print(new_state["score"])
 
 backend = rfx.Backend(
     store=InMemoryStore(),
@@ -384,22 +392,28 @@ backend = rfx.Backend(
 ```
 
 The callback receives `(workflow_execution_id, previous_state,
-new_state)` as plain dicts. It must be pure: no side effects, no
-exceptions, no calls back into the backend. See NOTES.md for the full
-purity contract.
+new_state, event)`. `event` is a `StateChangeEvent` with a single field
+`op` identifying the step dispatch token that triggered the merge.
+The callback must be pure: no side effects, no exceptions, no calls
+back into the backend. See NOTES.md for the full purity contract.
 
 ---
 
 ## Executor contract and error handling
 
-The executor contract is `(fn: str, inputs: dict) -> dict`.
+The executor contract is `(op: str, inputs: dict) -> dict`.
+
+`op` is the dispatch token from the workflow spec. The executor switches
+on it to determine what work to perform. Because `op` is the unique step
+identity within the workflow, the executor can use it to look up any
+step-specific configuration it needs.
 
 The recommended pattern catches errors and returns a structured output
 so branch conditions can act on them:
 ```python
-def execute(fn, inputs):
+def execute(op, inputs):
     try:
-        return run_step(fn, inputs)
+        return run_step(op, inputs)
     except Exception as e:
         return {"error": str(e), "ok": False}
 ```
@@ -421,25 +435,36 @@ runfox/
   __init__.py       -- public API: Backend, Workflow,
                        Complete, Dispatch, Halt, Pending,
                        StepStatus, WorkflowStatus
-  results.py        -- Complete, Halt, Dispatch, DispatchJob, Pending
+  results.py        -- Complete, Halt, Dispatch, DispatchJob, Pending,
+                       StateChangeEvent
   status.py         -- StepStatus, WorkflowStatus
   workflow.py       -- Workflow; pure graph functions: advance(),
                        on_step_result(), dependency walk, input
-                       resolution, branch evaluation
+                       resolution, branch evaluation,
+                       _find_transitive_dependents
   backend/
     __init__.py     -- Backend, Store, Runner, InMemoryStore,
                        SqliteStore, InProcessRunner, InProcessWorker,
                        SqliteRunner
     base.py         -- Backend, WorkflowRecord, StepRecord,
                        ID generation, composite key accessors
-    store.py        -- Store base, InMemoryStore, SqliteStore
-    runner.py       -- Runner base, InProcessRunner, InProcessWorker,
-                       SqliteRunner
-    dynamodbb.py    -- DynamoDBBackend skeleton (not yet implemented)
+    models.py       -- WorkflowRecord, StepRecord dataclasses
+    store.py        -- Store base class
+    inmemory_store.py -- InMemoryStore
+    sqlite_store.py -- SqliteStore
+    runner.py       -- Runner base class
+    inprocess_runner.py -- InProcessRunner
+    inprocess_worker.py -- InProcessWorker
+    sqlite_runner.py -- SqliteRunner
 
 tests/
-  test_runfox.py    -- core test suite (no mocks, no AWS)
+  conftest.py       -- shared executors, specs, fixtures
+  test_backend.py   -- Backend lifecycle operations
+  test_workflow.py  -- Workflow construction, execution, cascade reset
+  test_sqlite.py    -- SqliteStore and SqliteRunner
   test_status.py    -- StepStatus and WorkflowStatus enum value guards
+  test_state_change_event.py -- on_state_change callback behaviour
+  test_inprocess.py -- InProcessRunner and InProcessWorker
 
 examples/
   ops/              -- abstract patterns: single_step, accumulation,
@@ -458,9 +483,16 @@ called for all ready steps before any are submitted. This prevents
 double-submission if two workers complete parallel steps and both
 trigger `advance()`.
 
-**The executor knows nothing about runfox.** It receives `(fn, inputs)`
-and returns a dict. The coupling between executor and orchestrator is a
-key naming convention on the shared store, not a shared library.
+**The executor knows nothing about runfox.** It receives `(op, inputs)`
+and returns a dict. The coupling between executor and orchestrator is
+the `op` naming convention -- the dispatch token that identifies what
+work the step performs. The executor codebase has no runfox dependency
+and can be deployed independently.
+
+**`op` is both step identity and dispatch token.** A single field serves
+both roles. The executor switches on `op` to determine what to do.
+`label` is an optional YAML-only field for human description; runfox
+never reads it.
 
 **The Workflow object has no trusted local state.** Every property and
 method loads from the backend. Multiple instances with the same
@@ -470,6 +502,13 @@ system where more than one process may operate on the same workflow.
 **Branch conditions are serialisable data.** JSON Logic expressions
 stored in the workflow definition. Evaluable by any process with backend
 access without importing application code.
+
+**Set-branch cascade resets transitive dependents.** When a set-branch
+fires, all steps that transitively depend on the reset targets are also
+reset to ready. This prevents stale outputs from downstream steps
+persisting across loop iterations. A stale result guard in
+`on_step_result` discards any result arriving for a step that is no
+longer IN_PROGRESS.
 
 **on_step_result and advance are deliberately decoupled.**
 on_step_result processes one step result and returns. advance finds and

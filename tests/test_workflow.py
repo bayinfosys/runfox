@@ -154,8 +154,8 @@ class TestInputResolution:
         backend = Backend(executor=counting_executor)
         spec = {
             "name": "literal-test",
-            "steps": [{"id": "s1", "fn": "count_r", "input": {"text": "strawberry"}}],
-            "outputs": {"count": {"var": "steps.s1.output.count"}},
+            "steps": [{"op": "count", "input": {"text": "strawberry"}}],
+            "outputs": {"count": {"var": "steps.count.output.count"}},
         }
         result = rfx.Workflow.from_dict(spec, backend).run()
         assert result.outcome["count"] == 3
@@ -171,15 +171,14 @@ class TestInputResolution:
         spec = {
             "name": "state-resolution",
             "steps": [
-                {"id": "w", "fn": "write"},
+                {"op": "write"},
                 {
-                    "id": "r",
-                    "fn": "read",
-                    "depends_on": ["w"],
+                    "op": "read",
+                    "depends_on": ["write"],
                     "input": {"value": {"var": "state.total"}},
                 },
             ],
-            "outputs": {"got": {"var": "steps.r.output.got"}},
+            "outputs": {"got": {"var": "steps.read.output.got"}},
         }
         result = rfx.Workflow.from_dict(spec, Backend(executor=executor)).run()
         assert result.outcome["got"] == 42
@@ -193,9 +192,9 @@ class TestInputResolution:
         spec = {
             "name": "input-resolution",
             "steps": [
-                {"id": "s", "fn": "echo", "input": {"val": {"var": "input.name"}}},
+                {"op": "echo", "input": {"val": {"var": "input.name"}}},
             ],
-            "outputs": {"out": {"var": "steps.s.output.out"}},
+            "outputs": {"out": {"var": "steps.echo.output.out"}},
         }
         result = rfx.Workflow.from_dict(
             spec, Backend(executor=executor), inputs={"name": "alice"}
@@ -251,7 +250,7 @@ class TestRetry:
     def test_retry_runs_max_attempts_times(self):
         RETRY_SPEC = {
             "name": "retry-test",
-            "steps": [{"id": "flaky", "fn": "flaky", "max_attempts": 3}],
+            "steps": [{"op": "flaky", "max_attempts": 3}],
             "outputs": {"run_id": {"var": "steps.flaky.output.run_id"}},
         }
         run_ids = []
@@ -270,7 +269,7 @@ class TestRetry:
     def test_retry_final_output_is_last_attempt(self):
         RETRY_SPEC = {
             "name": "retry-final",
-            "steps": [{"id": "s", "fn": "f", "max_attempts": 2}],
+            "steps": [{"op": "s", "max_attempts": 2}],
             "outputs": {"v": {"var": "steps.s.output.v"}},
         }
         backend = Backend(executor=lambda fn, inputs: None)
@@ -305,3 +304,164 @@ class TestTiming:
         assert set(durations.keys()) == {"f0", "f1", "f2", "f3", "f4"}
         for v in durations.values():
             assert v >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Cascade reset and stale result guard
+# ---------------------------------------------------------------------------
+
+
+class TestCascadeReset:
+
+    def test_cascade_resets_linear_chain(self):
+        SPEC = """
+name: test
+steps:
+  - op: a
+  - op: b
+    depends_on: [a]
+  - op: c
+    depends_on: [b]
+"""
+        backend = Backend()
+        wf = rfx.Workflow.from_yaml(SPEC, backend)
+
+        for op in ["a", "b", "c"]:
+            backend.mark_in_progress(wf.id, op)
+            backend.mark_complete(wf.id, op)
+
+        from runfox.workflow import _find_transitive_dependents
+        record = backend.load(wf.id)
+        dependents = _find_transitive_dependents(record, ["a"])
+        for op in ["a"] + dependents:
+            backend.reset_step(wf.id, op)
+
+        statuses = wf.step_statuses
+        assert statuses["a"] == StepStatus.READY
+        assert statuses["b"] == StepStatus.READY
+        assert statuses["c"] == StepStatus.READY
+
+    def test_cascade_resets_diamond(self):
+        SPEC = """
+name: test
+steps:
+  - op: a
+  - op: b
+    depends_on: [a]
+  - op: c
+    depends_on: [a]
+  - op: d
+    depends_on: [b, c]
+"""
+        backend = Backend()
+        wf = rfx.Workflow.from_yaml(SPEC, backend)
+
+        for op in ["a", "b", "c", "d"]:
+            backend.mark_in_progress(wf.id, op)
+            backend.mark_complete(wf.id, op)
+
+        from runfox.workflow import _find_transitive_dependents
+        record = backend.load(wf.id)
+        dependents = _find_transitive_dependents(record, ["a"])
+        for op in ["a"] + dependents:
+            backend.reset_step(wf.id, op)
+
+        statuses = wf.step_statuses
+        assert statuses["a"] == StepStatus.READY
+        assert statuses["b"] == StepStatus.READY
+        assert statuses["c"] == StepStatus.READY
+        assert statuses["d"] == StepStatus.READY
+
+    def test_cascade_does_not_reset_unrelated_steps(self):
+        SPEC = """
+name: test
+steps:
+  - op: a
+  - op: b
+  - op: c
+    depends_on: [a, b]
+"""
+        backend = Backend()
+        wf = rfx.Workflow.from_yaml(SPEC, backend)
+
+        for op in ["a", "b", "c"]:
+            backend.mark_in_progress(wf.id, op)
+            backend.mark_complete(wf.id, op)
+
+        from runfox.workflow import _find_transitive_dependents
+        record = backend.load(wf.id)
+        dependents = _find_transitive_dependents(record, ["a"])
+        for op in ["a"] + dependents:
+            backend.reset_step(wf.id, op)
+
+        statuses = wf.step_statuses
+        assert statuses["a"] == StepStatus.READY
+        assert statuses["b"] == StepStatus.COMPLETE
+        assert statuses["c"] == StepStatus.READY
+
+    def test_stale_result_discarded_after_reset(self):
+        SPEC = """
+name: test
+steps:
+  - op: a
+  - op: b
+    depends_on: [a]
+"""
+        backend = Backend()
+        wf = rfx.Workflow.from_yaml(SPEC, backend)
+
+        backend.mark_in_progress(wf.id, "a")
+        backend.mark_complete(wf.id, "a")
+        backend.mark_in_progress(wf.id, "b")
+
+        backend.reset_step(wf.id, "b")
+        assert wf.step_statuses["b"] == StepStatus.READY
+
+        result = wf.on_step_result("b", {"value": 99})
+        assert result is None
+        assert wf.step_statuses["b"] == StepStatus.READY
+
+    def test_cascade_end_to_end(self):
+        SPEC = """
+name: test
+steps:
+  - op: seed
+
+  - op: loop
+    depends_on: [seed]
+    input:
+      n: {"var": "state.n"}
+    branch:
+      - condition: {">=": [{"var": "n"}, 3]}
+        action: complete
+      - condition: {"<": [{"var": "n"}, 3]}
+        action: {set: "steps.loop.status"}
+
+  - op: downstream
+    depends_on: [loop]
+    input:
+      n: {"var": "state.n"}
+
+outputs:
+  n: {"var": "state.n"}
+  downstream_n: {"var": "steps.downstream.output.seen"}
+"""
+        call_log = []
+
+        def execute(op, inputs):
+            call_log.append(op)
+            if op == "seed":
+                return {"n": 0}
+            if op == "loop":
+                return {"n": inputs["n"] + 1}
+            if op == "downstream":
+                return {"seen": inputs["n"]}
+
+        backend = Backend(executor=execute)
+        wf = rfx.Workflow.from_yaml(SPEC, backend)
+        result = wf.run()
+
+        assert isinstance(result, Complete)
+        assert result.outcome["n"] == 3
+        assert result.outcome["downstream_n"] == 3
+        assert call_log.count("downstream") == 1

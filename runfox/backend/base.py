@@ -12,8 +12,8 @@ Construction
 Composite key accessors
 -----------------------
 workflow_execution_id(record)
-step_key(wf_exec_id, step_id)
-step_run_key(wf_exec_id, step_id, run_id)
+step_key(wf_exec_id, op)
+step_run_key(wf_exec_id, op, run_id)
 """
 
 import dataclasses
@@ -79,11 +79,11 @@ class Backend:
     def workflow_execution_id(self, record: WorkflowRecord) -> str:
         return f"{record.workflow_id}#{record.execution_id}"
 
-    def step_key(self, wf_exec_id: str, step_id: str) -> str:
-        return f"{wf_exec_id}#{step_id}"
+    def step_key(self, wf_exec_id: str, op: str) -> str:
+        return f"{wf_exec_id}#{op}"
 
-    def step_run_key(self, wf_exec_id: str, step_id: str, run_id: int) -> str:
-        return f"{wf_exec_id}#{step_id}#{run_id}"
+    def step_run_key(self, wf_exec_id: str, op: str, run_id: int) -> str:
+        return f"{wf_exec_id}#{op}#{run_id}"
 
     # ------------------------------------------------------------------
     # Utilities
@@ -92,8 +92,8 @@ class Backend:
     def _now_iso(self) -> str:
         return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    def _make_step_record(self, step_id: str) -> StepRecord:
-        return StepRecord(id=step_id)
+    def _make_step_record(self, op: str) -> StepRecord:
+        return StepRecord(op=op)
 
     # ------------------------------------------------------------------
     # Store pass-throughs (used by Workflow and tests)
@@ -117,7 +117,7 @@ class Backend:
             inputs=inputs or {},
             state={},
             steps={
-                step["id"]: self._make_step_record(step["id"]) for step in spec["steps"]
+                step["op"]: self._make_step_record(step["op"]) for step in spec["steps"]
             },
             status=WorkflowStatus.PENDING,
         )
@@ -128,10 +128,10 @@ class Backend:
     # Named step operations
     # ------------------------------------------------------------------
 
-    def mark_in_progress(self, workflow_execution_id: str, step_id: str) -> None:
+    def mark_in_progress(self, workflow_execution_id: str, op: str) -> None:
         record = self._store.load(workflow_execution_id)
         new_step = dataclasses.replace(
-            record.steps[step_id],
+            record.steps[op],
             status=StepStatus.IN_PROGRESS,
             start_time=self._now_iso(),
             host=socket.gethostname(),
@@ -140,28 +140,28 @@ class Backend:
             dataclasses.replace(
                 record,
                 status=WorkflowStatus.IN_PROGRESS,
-                steps={**record.steps, step_id: new_step},
+                steps={**record.steps, op: new_step},
             )
         )
 
-    def mark_complete(self, workflow_execution_id: str, step_id: str) -> None:
+    def mark_complete(self, workflow_execution_id: str, op: str) -> None:
         record = self._store.load(workflow_execution_id)
         new_step = dataclasses.replace(
-            record.steps[step_id],
+            record.steps[op],
             status=StepStatus.COMPLETE,
             end_time=self._now_iso(),
         )
         self._store.write(
             dataclasses.replace(
                 record,
-                steps={**record.steps, step_id: new_step},
+                steps={**record.steps, op: new_step},
             )
         )
 
-    def mark_halted(self, workflow_execution_id: str, step_id: str) -> None:
+    def mark_halted(self, workflow_execution_id: str, op: str) -> None:
         record = self._store.load(workflow_execution_id)
         new_step = dataclasses.replace(
-            record.steps[step_id],
+            record.steps[op],
             status=StepStatus.HALTED,
             end_time=self._now_iso(),
         )
@@ -169,19 +169,19 @@ class Backend:
             dataclasses.replace(
                 record,
                 status=WorkflowStatus.HALTED,
-                steps={**record.steps, step_id: new_step},
+                steps={**record.steps, op: new_step},
             )
         )
 
     def write_step_output(
-        self, workflow_execution_id: str, step_id: str, output: dict
+        self, workflow_execution_id: str, op: str, output: dict
     ) -> None:
         record = self._store.load(workflow_execution_id)
-        new_step = dataclasses.replace(record.steps[step_id], output=output)
+        new_step = dataclasses.replace(record.steps[op], output=output)
         self._store.write(
             dataclasses.replace(
                 record,
-                steps={**record.steps, step_id: new_step},
+                steps={**record.steps, op: new_step},
             )
         )
 
@@ -215,36 +215,36 @@ class Backend:
         )
         self._store.write(dataclasses.replace(record, outcome=outcome, status=status))
 
-    def reset_step(self, workflow_execution_id: str, step_id: str) -> None:
+    def reset_step(self, workflow_execution_id: str, op: str) -> None:
         record = self._store.load(workflow_execution_id)
         new_step = dataclasses.replace(
-            record.steps[step_id],
+            record.steps[op],
             status=StepStatus.READY,
             output=None,
             start_time=None,
             end_time=None,
-            run_id=record.steps[step_id].run_id + 1,
+            run_id=record.steps[op].run_id + 1,
         )
         self._store.write(
             dataclasses.replace(
                 record,
-                steps={**record.steps, step_id: new_step},
+                steps={**record.steps, op: new_step},
             )
         )
 
-    def reset_for_retry(self, workflow_execution_id: str, step_id: str) -> None:
+    def reset_for_retry(self, workflow_execution_id: str, op: str) -> None:
         record = self._store.load(workflow_execution_id)
         new_step = dataclasses.replace(
-            record.steps[step_id],
+            record.steps[op],
             status=StepStatus.RETRY,
-            run_id=record.steps[step_id].run_id + 1,
+            run_id=record.steps[op].run_id + 1,
             start_time=None,
             end_time=None,
         )
         self._store.write(
             dataclasses.replace(
                 record,
-                steps={**record.steps, step_id: new_step},
+                steps={**record.steps, op: new_step},
             )
         )
 
@@ -264,5 +264,5 @@ class Backend:
     def take_tasks(self) -> list:
         return self._runner.take_pending_jobs()
 
-    def submit_result(self, workflow_execution_id, step_id, output):
-        self._runner.submit_work_result(workflow_execution_id, step_id, output)
+    def submit_result(self, workflow_execution_id, op, output):
+        self._runner.submit_work_result(workflow_execution_id, op, output)

@@ -63,11 +63,11 @@ def _parse_iso(ts: str) -> datetime.datetime:
     return datetime.datetime.fromisoformat(ts)
 
 
-def _get_step_spec(record: WorkflowRecord, step_id: str) -> dict:
+def _get_step_spec(record: WorkflowRecord, op: str) -> dict:
     for step in record.spec["steps"]:
-        if step["id"] == step_id:
+        if step["op"] == op:
             return step
-    raise KeyError(f"Step {step_id!r} not found in spec")
+    raise KeyError(f"Step {op!r} not found in spec")
 
 
 def _find_dispatchable_steps(record: WorkflowRecord) -> list[dict]:
@@ -83,8 +83,8 @@ def _find_dispatchable_steps(record: WorkflowRecord) -> list[dict]:
     """
     dispatchable = []
     for step_spec in record.spec["steps"]:
-        sid = step_spec["id"]
-        if record.steps[sid].status not in (StepStatus.READY, StepStatus.RETRY):
+        op = step_spec["op"]
+        if record.steps[op].status not in (StepStatus.READY, StepStatus.RETRY):
             continue
         deps = step_spec.get("depends_on", [])
         if all(record.steps[d].status == StepStatus.COMPLETE for d in deps):
@@ -104,14 +104,14 @@ def _make_context(record: WorkflowRecord) -> dict:
     """
     Build the JSON Logic evaluation context.
 
-    ``steps.<id>.output.<field>``  -- completed step outputs
+    ``steps.<op>.output.<field>``  -- completed step outputs
     ``input.<field>``              -- immutable workflow-level inputs
     ``state.<field>``              -- mutable shared accumulator
     """
     return {
         "steps": {
-            sid: {"output": s.output}
-            for sid, s in record.steps.items()
+            op: {"output": s.output}
+            for op, s in record.steps.items()
             if s.output is not None
         },
         "input": record.inputs,
@@ -160,12 +160,12 @@ def _assert_inputs_satisfied(step_spec: dict, record: WorkflowRecord) -> None:
         ref_id = parts[1]
         if ref_id not in record.steps:
             raise ValueError(
-                f"Step {step_spec['id']!r} input {key!r} references "
+                f"Step {step_spec['op']!r} input {key!r} references "
                 f"unknown step {ref_id!r}"
             )
         if record.steps[ref_id].status != StepStatus.COMPLETE:
             raise ValueError(
-                f"Step {step_spec['id']!r} input {key!r} references "
+                f"Step {step_spec['op']!r} input {key!r} references "
                 f"step {ref_id!r} which has status "
                 f"{record.steps[ref_id].status!r}, expected complete"
             )
@@ -173,12 +173,12 @@ def _assert_inputs_satisfied(step_spec: dict, record: WorkflowRecord) -> None:
 
 def _parse_set_targets(action: dict, record: WorkflowRecord) -> list[str]:
     """
-    Extract a list of step IDs from a set branch action dict.
+    Extract a list of ops from a set branch action dict.
 
     The ``set`` key accepts the following forms:
 
-      "steps.X.status"              -- dot-path; middle segment is step ID
-      "X"                           -- bare step ID string
+      "steps.X.status"              -- dot-path; middle segment is op
+      "X"                           -- bare op string
       ["steps.X.status", "Y", ...]  -- list of either of the above
       JSON Logic expression          -- must resolve to a string or list
                                        in one of the forms above
@@ -192,14 +192,14 @@ def _parse_set_targets(action: dict, record: WorkflowRecord) -> list[str]:
     if not isinstance(raw, list):
         raw = [raw]
 
-    step_ids = []
+    ops = []
     for item in raw:
         if isinstance(item, str) and "." in item:
-            step_ids.append(item.split(".")[1])
+            ops.append(item.split(".")[1])
         else:
-            step_ids.append(item)
+            ops.append(item)
 
-    return step_ids
+    return ops
 
 
 def _evaluate_branches(
@@ -227,6 +227,35 @@ def _evaluate_branches(
             return branch["action"], branch.get("result", {})
 
     return None, None
+
+
+def _find_transitive_dependents(record: WorkflowRecord, seed_ops: list[str]) -> list[str]:
+    """
+    Return all step ops that transitively depend on any op in seed_ops.
+
+    seed_ops themselves are not included in the result. All transitive
+    dependents are returned regardless of their current status; the
+    caller decides which to reset.
+
+    Used by the set-branch handler to cascade resets forward through
+    the dependency graph so that stale outputs from downstream steps
+    are cleared before the workflow re-dispatches.
+    """
+    reverse: dict[str, set[str]] = {s["op"]: set() for s in record.spec["steps"]}
+    for step in record.spec["steps"]:
+        for dep in step.get("depends_on", []):
+            reverse[dep].add(step["op"])
+
+    visited: set[str] = set()
+    frontier = list(seed_ops)
+    while frontier:
+        node = frontier.pop()
+        for dependent in reverse.get(node, ()):
+            if dependent not in visited and dependent not in seed_ops:
+                visited.add(dependent)
+                frontier.append(dependent)
+
+    return list(visited)
 
 
 # ---------------------------------------------------------------------------
@@ -306,22 +335,20 @@ class Workflow:
         for step_spec in dispatchable:
             _assert_inputs_satisfied(step_spec, record)  # raises if deps not satisfied
             resolved = _resolve_inputs(step_spec, record)
-            self.backend.mark_in_progress(self.id, step_spec["id"])
-            fn = step_spec.get("fn") or step_spec.get("type")
-            step = record.steps[step_spec["id"]]
+            self.backend.mark_in_progress(self.id, step_spec["op"])
+            step = record.steps[step_spec["op"]]
             jobs.append(
                 DispatchJob(
                     workflow_execution_id=self.id,
-                    step_id=step_spec["id"],
-                    fn=fn,
+                    op=step_spec["op"],
                     inputs=resolved,
                     run_id=step.run_id,
-                )
+                 )
             )
 
         return Dispatch(jobs=jobs)
 
-    def on_step_result(self, step_id: str, output: dict) -> Any:
+    def on_step_result(self, op: str, output: dict) -> Any:
         """
         Process a completed step result.
 
@@ -347,27 +374,29 @@ class Workflow:
         ready steps.
 
         In the event-driven pattern:
-            wf.on_step_result(step_id, output)
+            wf.on_step_result(op, output)
             wf.advance()
         """
         record = self.backend.load(self.id)
-        step_spec = _get_step_spec(record, step_id)
+
+        if record.steps[op].status != StepStatus.IN_PROGRESS:
+            return None
+
+        step_spec = _get_step_spec(record, op)
         action, result = _evaluate_branches(step_spec, output, record)
 
-        self.backend.write_step_output(self.id, step_id, output)
-        event = StateChangeEvent(
-            step_id=step_id,
-            fn=step_spec.get("fn") or step_spec.get("type"),
-        )
+        self.backend.write_step_output(self.id, op, output)
+        # TODO: carry a diff?
+        event = StateChangeEvent(op=op)
         self.backend.merge_workflow_state(self.id, output, event)
 
         if action == "halt":
-            self.backend.mark_halted(self.id, step_id)
+            self.backend.mark_halted(self.id, op)
             self.backend.write_workflow_outcome(self.id, result)
             return Halt(result)
 
         if action == "complete":
-            self.backend.mark_complete(self.id, step_id)
+            self.backend.mark_complete(self.id, op)
             return None
 
         if isinstance(action, dict) and "set" in action:
@@ -375,20 +404,22 @@ class Workflow:
             # Include the current step and deduplicate. reset_step increments
             # run_id, so calling it more than once per step per branch
             # evaluation would over-increment.
-            all_targets = dict.fromkeys(targets + [step_id])
-            for target in all_targets:
+            all_targets = dict.fromkeys(targets + [op])
+            # also update all dependents of this op
+            dependents = _find_transitive_dependents(record, list(all_targets))
+            for target in list(all_targets) + dependents:
                 self.backend.reset_step(self.id, target)
             return None
 
         # No branch fired. Use max_attempts as the retry budget.
         max_attempts = step_spec.get("max_attempts", 1)
-        current_run_id = record.steps[step_id].run_id
+        current_run_id = record.steps[op].run_id
 
         if current_run_id + 1 < max_attempts:
-            self.backend.reset_for_retry(self.id, step_id)
+            self.backend.reset_for_retry(self.id, op)
             return Pending()
 
-        self.backend.mark_complete(self.id, step_id)
+        self.backend.mark_complete(self.id, op)
         return None
 
     def run(self, worker=None) -> Any:
@@ -420,8 +451,8 @@ class Workflow:
             if not pairs:
                 time.sleep(self.backend.poll_interval)
                 continue
-            for step_id, output in pairs:
-                self.on_step_result(step_id, output)
+            for op, output in pairs:
+                self.on_step_result(op, output)
 
     # ------------------------------------------------------------------
     # Status inspection
@@ -439,8 +470,8 @@ class Workflow:
 
     @property
     def step_statuses(self) -> dict[str, StepStatus]:
-        """Dict of {step_id: StepStatus} for all steps."""
-        return {sid: s.status for sid, s in self.backend.load(self.id).steps.items()}
+        """Dict of {op: StepStatus} for all steps."""
+        return {op: s.status for op, s in self.backend.load(self.id).steps.items()}
 
     # ------------------------------------------------------------------
     # Timing and progress
@@ -473,12 +504,12 @@ class Workflow:
         record = self.backend.load(self.id)
         now = datetime.datetime.now(datetime.timezone.utc)
         durations: dict[str, float] = {}
-        for sid, s in record.steps.items():
+        for op, s in record.steps.items():
             if s.start_time is None:
                 continue
             start = _parse_iso(s.start_time)
             end = _parse_iso(s.end_time) if s.end_time else now
-            durations[sid] = (end - start).total_seconds()
+            durations[op] = (end - start).total_seconds()
         return durations
 
     @property

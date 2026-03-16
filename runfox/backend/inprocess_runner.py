@@ -68,7 +68,7 @@ class InProcessRunner(Runner):
         return jobs
 
     def submit_work_result(
-        self, workflow_execution_id: str, step_id: str, output: dict
+        self, workflow_execution_id: str, op: str, output: dict
     ) -> None:
         existing = self._results.get(workflow_execution_id, [])
-        self._results[workflow_execution_id] = existing + [(step_id, output)]
+        self._results[workflow_execution_id] = existing + [(op, output)]

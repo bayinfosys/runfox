@@ -177,7 +177,7 @@ class TestSqliteExecution(_SqliteTest):
 
     def test_set_loop_runs_to_completion(self):
         backend, worker = self._make(
-            lambda fn, inputs: {"n": (inputs.get("n") or 0) + 1}
+            lambda op, inputs: {"n": (inputs.get("n") or 0) + 1}
         )
         result = rfx.Workflow.from_yaml(SET_LOOP_YAML, backend).run(worker=worker)
         assert isinstance(result, Complete)
@@ -185,7 +185,7 @@ class TestSqliteExecution(_SqliteTest):
 
     def test_set_loop_run_id_increments(self):
         backend, worker = self._make(
-            lambda fn, inputs: {"n": (inputs.get("n") or 0) + 1}
+            lambda op, inputs: {"n": (inputs.get("n") or 0) + 1}
         )
         wf = rfx.Workflow.from_yaml(SET_LOOP_YAML, backend)
         wf.run(worker=worker)
@@ -206,11 +206,10 @@ class TestSqliteRunner(_SqliteTest):
     Verifies the tasks table protocol independently of full workflow runs.
     """
 
-    def _make_job(self, step_id="s1", fn="f", inputs=None, run_id=0):
+    def _make_job(self, op="s1", inputs=None, run_id=0):
         return DispatchJob(
             workflow_execution_id="wf#exec",
-            step_id=step_id,
-            fn=fn,
+            op=op,
             inputs=inputs or {},
             run_id=run_id,
         )
@@ -227,8 +226,7 @@ class TestSqliteRunner(_SqliteTest):
         runner.dispatch("wf#exec", [job])
         pending = runner.list_pending_jobs()
         assert len(pending) == 1
-        assert pending[0].step_id == "s1"
-        assert pending[0].fn == "f"
+        assert pending[0].op == "s1"
         assert pending[0].workflow_execution_id == "wf#exec"
 
     def test_list_pending_is_nondestructive(self):
@@ -277,11 +275,11 @@ class TestSqliteRunner(_SqliteTest):
 
     def test_multiple_jobs_dispatched_and_taken(self):
         runner, _ = self._make_runner()
-        jobs = [self._make_job(step_id=f"s{i}", run_id=i) for i in range(3)]
+        jobs = [self._make_job(op=f"s{i}", run_id=i) for i in range(3)]
         runner.dispatch("wf#exec", jobs)
         taken = runner.take_pending_jobs()
         assert len(taken) == 3
-        assert {j.step_id for j in taken} == {"s0", "s1", "s2"}
+        assert {j.op for j in taken} == {"s0", "s1", "s2"}
 
     def test_run_id_recovered_from_task_key(self):
         runner, _ = self._make_runner()

@@ -2,11 +2,10 @@ from runfox.backend.inprocess_runner import InProcessRunner
 from runfox.backend.inprocess_worker import InProcessWorker
 from runfox.results import DispatchJob
 
-def _make_job(step_id="s1", fn="f", inputs=None, run_id=0):
+def _make_job(op, inputs=None, run_id=0):
     return DispatchJob(
         workflow_execution_id="wf#exec",
-        step_id=step_id,
-        fn=fn,
+        op=op,
         inputs=inputs or {},
         run_id=run_id,
     )
@@ -19,20 +18,20 @@ class TestInProcessWorker:
 
     def test_run_executes_pending_jobs(self):
         runner, worker = self._make_pair(lambda fn, inputs: {"value": 1})
-        runner.dispatch("wf#exec", [_make_job()])
+        runner.dispatch("wf#exec", [_make_job("test_op")])
         worker.run("wf#exec")
         results = runner.gather("wf#exec")
-        assert results == [("s1", {"value": 1})]
+        assert results == [("test_op", {"value": 1})]
 
-    def test_run_passes_fn_and_inputs_to_executor(self):
+    def test_run_passes_op_and_inputs_to_executor(self):
         received = []
-        def executor(fn, inputs):
-            received.append((fn, inputs))
+        def executor(op, inputs):
+            received.append((op, inputs))
             return {}
         runner, worker = self._make_pair(executor)
-        runner.dispatch("wf#exec", [_make_job(fn="myfn", inputs={"x": 42})])
+        runner.dispatch("wf#exec", [_make_job("myop", inputs={"x": 42})])
         worker.run("wf#exec")
-        assert received == [("myfn", {"x": 42})]
+        assert received == [("myop", {"x": 42})]
 
     def test_run_on_empty_queue_does_nothing(self):
         runner, worker = self._make_pair(lambda fn, inputs: {})
@@ -40,19 +39,19 @@ class TestInProcessWorker:
         assert runner.gather("wf#exec") == []
 
     def test_executor_exception_produces_error_output(self):
-        def bad(fn, inputs):
+        def bad(op, inputs):
             raise ValueError("boom")
         runner, worker = self._make_pair(bad)
-        runner.dispatch("wf#exec", [_make_job()])
+        runner.dispatch("wf#exec", [_make_job("test_op")])
         worker.run("wf#exec")
         results = runner.gather("wf#exec")
         assert results[0][1] == {"error": "boom", "ok": False}
 
     def test_multiple_jobs_all_executed(self):
-        runner, worker = self._make_pair(lambda fn, inputs: {"done": fn})
-        jobs = [_make_job(step_id=f"s{i}", fn=f"f{i}") for i in range(3)]
+        runner, worker = self._make_pair(lambda fn, inputs: {"done": op})
+        jobs = [_make_job(op=f"op_{i}") for i in range(3)]
         runner.dispatch("wf#exec", jobs)
         worker.run("wf#exec")
         results = runner.gather("wf#exec")
         assert len(results) == 3
-        assert {sid for sid, _ in results} == {"s0", "s1", "s2"}
+        assert {op for op, _ in results} == {"op_0", "op_1", "op_2"}

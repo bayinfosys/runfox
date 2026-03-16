@@ -36,26 +36,26 @@ SPEC = """
 name: multi_source
 
 steps:
-  - id: fetch_user
-    fn: fetch
+  - op: fetch_user
+    label: fetch
     input:
       source: users
       id:     {"var": "input.user_id"}
 
-  - id: fetch_orders
-    fn: fetch
+  - op: fetch_orders
+    label: fetch
     input:
       source: orders
       id:     {"var": "input.user_id"}
 
-  - id: fetch_profile
-    fn: fetch
+  - op: fetch_profile
+    label: fetch
     input:
       source: profile
       id:     {"var": "input.user_id"}
 
-  - id: assemble
-    fn: assemble
+  - op: assemble
+    label: assemble
     depends_on: [fetch_user, fetch_orders, fetch_profile]
     input:
       user:    {"var": "steps.fetch_user.output.record"}
@@ -67,12 +67,12 @@ outputs:
 """
 
 
-def execute(fn, inputs):
-    if fn == "fetch":
+def execute(label, inputs):
+    if label == "fetch":
         record = DATA_STORE[inputs["source"]][inputs["id"]]
         return {"record": record}
 
-    if fn == "assemble":
+    if label == "assemble":
         return {
             "record": {
                 **inputs["user"],

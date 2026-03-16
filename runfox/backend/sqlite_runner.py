@@ -1,5 +1,5 @@
 """
-runner.py -- Runner
+sqlite_runner.py -- Runner for sqlite
 
 Two primitives:
 
@@ -41,7 +41,7 @@ class SqliteRunner(Runner):
 
     dispatch() inserts PENDING rows. An external worker (outside runfox)
     claims and executes them, writing COMPLETE or ERROR back. gather() reads
-    COMPLETE/ERROR rows, marks them PROCESSED, and returns (step_id, output)
+    COMPLETE/ERROR rows, marks them PROCESSED, and returns (op, output)
     pairs. Returns an empty list if no rows are ready. Workflow.run() polls.
 
     Worker protocol
@@ -73,8 +73,7 @@ class SqliteRunner(Runner):
                 CREATE TABLE IF NOT EXISTS tasks (
                     task_key               TEXT PRIMARY KEY,
                     workflow_execution_id  TEXT NOT NULL,
-                    step_id                TEXT NOT NULL,
-                    fn                     TEXT NOT NULL,
+                    op                     TEXT NOT NULL,
                     inputs                 TEXT NOT NULL,
                     output                 TEXT,
                     status                 TEXT NOT NULL DEFAULT 'PENDING',
@@ -92,8 +91,7 @@ class SqliteRunner(Runner):
     def _row_to_job(self, row) -> "DispatchJob":
         return DispatchJob(
             workflow_execution_id=row["workflow_execution_id"],
-            step_id=row["step_id"],
-            fn=row["fn"],
+            op=row["op"],
             inputs=json.loads(row["inputs"]),
             run_id=int(row["task_key"].rsplit("#", 1)[-1]),
         )
@@ -102,16 +100,15 @@ class SqliteRunner(Runner):
         now = self._now_iso()
         with self._connect() as conn:
             for job in jobs:
-                task_key = f"{workflow_execution_id}#{job.step_id}#{job.run_id}"
+                task_key = f"{workflow_execution_id}#{job.op}#{job.run_id}"
                 conn.execute(
                     "INSERT INTO tasks "
-                    "(task_key, workflow_execution_id, step_id, fn, inputs, status, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, 'PENDING', ?)",
+                    "(task_key, workflow_execution_id, op, inputs, status, created_at) "
+                    "VALUES (?, ?, ?, ?, 'PENDING', ?)",
                     [
                         task_key,
                         workflow_execution_id,
-                        job.step_id,
-                        job.fn,
+                        job.op,
                         json.dumps(job.inputs),
                         now,
                     ],
@@ -127,7 +124,7 @@ class SqliteRunner(Runner):
             pairs = []
             for row in rows:
                 output = json.loads(row["output"])
-                pairs.append((row["step_id"], output))
+                pairs.append((row["op"], output))
                 conn.execute(
                     "UPDATE tasks SET status = 'PROCESSED' WHERE task_key = ?",
                     [row["task_key"]],
@@ -158,12 +155,12 @@ class SqliteRunner(Runner):
         return [self._row_to_job(row) for row in rows]
 
     def submit_work_result(
-        self, workflow_execution_id: str, step_id: str, output: dict
+        self, workflow_execution_id: str, op: str, output: dict
     ) -> None:
         now = self._now_iso()
         with self._connect() as conn:
             conn.execute(
                 "UPDATE tasks SET status = 'COMPLETE', output = ?, updated_at = ? "
-                "WHERE workflow_execution_id = ? AND step_id = ? AND status = 'STARTED'",
-                [json.dumps(output), now, workflow_execution_id, step_id],
+                "WHERE workflow_execution_id = ? AND op = ? AND status = 'STARTED'",
+                [json.dumps(output), now, workflow_execution_id, op],
             )

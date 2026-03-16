@@ -3,7 +3,7 @@ abstract_single_step -- the minimal runfox workflow.
 
 One step. One executor. One output.
 
-Demonstrates: step definition, fn dispatch, literal inputs, outputs.
+Demonstrates: step definition, op dispatch, literal inputs, outputs.
 """
 
 import runfox as rfx
@@ -12,8 +12,7 @@ SPEC = """
 name: single_step
 
 steps:
-  - id: greet
-    fn: greet
+  - op: greet
     input:
       name: world
 
@@ -22,8 +21,8 @@ outputs:
 """
 
 
-def execute(fn, inputs):
-    if fn == "greet":
+def execute(op, inputs):
+    if op == "greet":
         return {"message": f"hello, {inputs['name']}"}
 
 

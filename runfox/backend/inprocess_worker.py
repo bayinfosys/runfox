@@ -46,7 +46,7 @@ class InProcessWorker:
     -------------------------
     This harness:
         for job in runner.pending(wf_exec_id):
-            output = executor(job.fn, job.inputs)
+            output = executor(job.op, job.inputs)
             runner.submit_work_result(wf_exec_id, job.step_id, output)
 
     SQS/Lambda equivalent:
@@ -62,7 +62,7 @@ class InProcessWorker:
     def run(self, workflow_execution_id: str) -> None:
         for job in self._runner.take_pending_jobs():
             try:
-                output = self._executor(job.fn, job.inputs)
+                output = self._executor(job.op, job.inputs)
             except Exception as exc:
                 output = {"error": str(exc), "ok": False}
-            self._runner.submit_work_result(workflow_execution_id, job.step_id, output)
+            self._runner.submit_work_result(workflow_execution_id, job.op, output)

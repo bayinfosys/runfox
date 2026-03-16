@@ -74,8 +74,8 @@ def render_board(board, width, height):
     )
 
 
-def execute(fn, inputs):
-    if fn == "init_board":
+def execute(op, inputs):
+    if op == "init":
         w, h = inputs["width"], inputs["height"]
         target = inputs["target_generation"]
         cells = PATTERNS.get(inputs["pattern"], PATTERNS["glider"])
@@ -88,7 +88,7 @@ def execute(fn, inputs):
             "target_generation": target,
         }
 
-    if fn == "evolve_board":
+    if op == "evolve":
         w, h = inputs["width"], inputs["height"]
         gen = inputs["generation"]
         target = inputs["target_generation"]
@@ -102,7 +102,7 @@ def execute(fn, inputs):
             "live_cells": sum(next_b),
         }
 
-    raise ValueError(f"Unknown fn: {fn!r}")
+    raise ValueError(f"Unknown op: {op!r}")
 
 
 def on_state_change(workflow_execution_id, previous, current, event):
@@ -118,16 +118,16 @@ def make_spec(pattern, width, height, generations):
     return f"""
 name: conways_game_of_life
 steps:
-  - id: init
-    fn: init_board
+  - op: init
+    label: initialise the board
     input:
       pattern:          {pattern}
       width:            {width}
       height:           {height}
       target_generation: {generations}
 
-  - id: evolve
-    fn: evolve_board
+  - op: evolve
+    label: evolve the board one timestep
     depends_on: [init]
     input:
       board:             {{"var": "state.board"}}

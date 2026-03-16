@@ -42,7 +42,7 @@ class Runner:
 
     def gather(self, workflow_execution_id: str) -> list:
         """
-        Return completed (step_id, output) pairs. Always returns immediately.
+        Return completed (op, output) pairs. Always returns immediately.
         Returns an empty list if no results are ready.
         """
         raise NotImplementedError
@@ -63,7 +63,7 @@ class Runner:
         raise NotImplementedError
 
     def submit_work_result(
-        self, workflow_execution_id: str, step_id: str, output: dict
+        self, workflow_execution_id: str, op: str, output: dict
     ) -> None:
         """Write a result back from a worker."""
         raise NotImplementedError

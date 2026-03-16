@@ -15,25 +15,21 @@ SPEC = """
 name: fan_out
 
 steps:
-  - id: root
-    fn: root
+  - op: root
 
-  - id: branch_a
-    fn: process
+  - op: branch_a
     depends_on: [root]
     input:
       value: {"var": "steps.root.output.value"}
       label: a
 
-  - id: branch_b
-    fn: process
+  - op: branch_b
     depends_on: [root]
     input:
       value: {"var": "steps.root.output.value"}
       label: b
 
-  - id: branch_c
-    fn: process
+  - op: branch_c
     depends_on: [root]
     input:
       value: {"var": "steps.root.output.value"}
@@ -46,10 +42,10 @@ outputs:
 """
 
 
-def execute(fn, inputs):
-    if fn == "root":
+def execute(op, inputs):
+    if op == "root":
         return {"value": 10}
-    if fn == "process":
+    if op == "branch_c":
         return {"result": inputs["value"] * 2}
 
 

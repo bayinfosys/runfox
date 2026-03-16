@@ -26,13 +26,13 @@ SPEC = """
 name: validation
 
 steps:
-  - id: check_name
-    fn: check_name
+  - op: check_name
+    label: check_name
     input:
       value: {"var": "input.name"}
 
-  - id: check_age
-    fn: check_age
+  - op: check_age
+    label: check_age
     input:
       value: {"var": "input.age"}
     branch:
@@ -43,13 +43,13 @@ steps:
           field:  age
           reason: must be 18 or over
 
-  - id: check_email
-    fn: check_email
+  - op: check_email
+    label: check_email
     input:
       value: {"var": "input.email"}
 
-  - id: report
-    fn: report
+  - op: report
+    label: report
     depends_on: [check_name, check_age, check_email]
     input:
       name_ok:  {"var": "state.name_ok"}
@@ -61,20 +61,20 @@ outputs:
 """
 
 
-def execute(fn, inputs):
-    if fn == "check_name":
+def execute(label, inputs):
+    if label == "check_name":
         ok = bool(inputs["value"]) and len(inputs["value"]) >= 2
         return {"name_ok": ok, "name_reason": "" if ok else "name too short"}
 
-    if fn == "check_age":
+    if label == "check_age":
         ok = int(inputs["value"]) >= 18
         return {"age_ok": ok, "age_reason": "" if ok else "must be 18 or over"}
 
-    if fn == "check_email":
+    if label == "check_email":
         ok = "@" in str(inputs["value"])
         return {"email_ok": ok, "email_reason": "" if ok else "invalid email"}
 
-    if fn == "report":
+    if label == "report":
         all_passed = inputs["name_ok"] and inputs["age_ok"] and inputs["email_ok"]
         return {
             "report": {

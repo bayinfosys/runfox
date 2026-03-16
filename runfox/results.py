@@ -24,8 +24,7 @@ class DispatchJob:
     """
 
     workflow_execution_id: str
-    step_id: str
-    fn: str
+    op: str  # step execution token - unique for each step definition
     inputs: dict
     run_id: int
 
@@ -81,9 +80,7 @@ class StateChangeEvent:
     Passed to the on_state_change callback to identify what triggered
     the state merge.
 
-    step_id -- the step that produced the output being merged.
-    fn      -- the function name that was executed.
+    op -- op token of the step which produced the output.
     """
 
-    step_id: str
-    fn: str
+    op: str

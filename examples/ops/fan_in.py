@@ -16,23 +16,19 @@ SPEC = """
 name: fan_in
 
 steps:
-  - id: source_a
-    fn: source
+  - op: source_a
     input:
       key: a
 
-  - id: source_b
-    fn: source
+  - op: source_b
     input:
       key: b
 
-  - id: source_c
-    fn: source
+  - op: source_c
     input:
       key: c
 
-  - id: merge
-    fn: merge
+  - op: merge
     depends_on: [source_a, source_b, source_c]
     input:
       a: {"var": "steps.source_a.output.value"}
@@ -44,10 +40,10 @@ outputs:
 """
 
 
-def execute(fn, inputs):
-    if fn == "source":
+def execute(op, inputs):
+    if op == "source":
         return {"value": len(inputs["key"])}  # trivial: length of key name
-    if fn == "merge":
+    if op == "merge":
         return {"total": inputs["a"] + inputs["b"] + inputs["c"]}
 
 

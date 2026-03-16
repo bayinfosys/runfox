@@ -19,15 +19,12 @@ SPEC = """
 name: accumulation
 
 steps:
-  - id: step_a
-    fn: produce_a
+  - op: step_a
 
-  - id: step_b
-    fn: produce_b
+  - op: step_b
     depends_on: [step_a]
 
-  - id: step_c
-    fn: produce_c
+  - op: step_c
     depends_on: [step_b]
     input:
       a: {"var": "state.a"}
@@ -40,12 +37,12 @@ outputs:
 """
 
 
-def execute(fn, inputs):
-    if fn == "produce_a":
+def execute(op, inputs):
+    if op == "step_a":
         return {"a": 1}
-    if fn == "produce_b":
+    if op == "step_b":
         return {"b": 2}
-    if fn == "produce_c":
+    if op == "step_c":
         # step_c reads prior accumulator values and derives a third
         return {"c": inputs["a"] + inputs["b"]}
 

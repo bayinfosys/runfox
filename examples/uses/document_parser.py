@@ -45,18 +45,18 @@ SPEC = """
 name: doc_parser
 
 steps:
-  - id: extract_headers
-    fn: extract_headers
+  - op: extract_headers
+    label: extract_headers
     input:
       text: {"var": "input.text"}
 
-  - id: extract_links
-    fn: extract_links
+  - op: extract_links
+    label: extract_links
     input:
       text: {"var": "input.text"}
 
-  - id: count_words
-    fn: count_words
+  - op: count_words
+    label: count_words
     input:
       text: {"var": "input.text"}
 
@@ -67,18 +67,18 @@ outputs:
 """
 
 
-def execute(fn, inputs):
+def execute(label, inputs):
     text = inputs["text"]
 
-    if fn == "extract_headers":
+    if label == "extract_headers":
         found = re.findall(r"^(#{1,6})\s+(.+)$", text, re.MULTILINE)
         return {"headers": [{"level": len(h), "text": t.strip()} for h, t in found]}
 
-    if fn == "extract_links":
+    if label == "extract_links":
         found = re.findall(r"\[([^\]]+)\]\(([^)]+)\)", text)
         return {"links": [{"text": t, "url": u} for t, u in found]}
 
-    if fn == "count_words":
+    if label == "count_words":
         return {"word_count": len(text.split())}
 
 

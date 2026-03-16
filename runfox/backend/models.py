@@ -1,19 +1,8 @@
 """
-base.py -- Backend
+models.py -- WorkflowRecord and StepRecord dataclasses.
 
-Composes a Store and a Runner. All workflow lifecycle operations are
-implemented here in terms of self._store.load() and self._store.write().
-dispatch() and gather() delegate to self._runner.
-
-Construction
-------------
-  Backend(store=s, runner=r)  -- explicit store and runner
-
-Composite key accessors
------------------------
-workflow_execution_id(record)
-step_key(wf_exec_id, step_id)
-step_run_key(wf_exec_id, step_id, run_id)
+Runtime state types used throughout the backend. These are plain data
+containers with no behaviour.
 """
 
 import dataclasses
@@ -33,7 +22,7 @@ class StepRecord:
     """
     Runtime state of a single step.
 
-    id         -- step identifier
+    op         -- step identifier
     status     -- current lifecycle status
     output     -- written by executor on completion; None until then
     start_time -- ISO-8601 UTC; set when claimed
@@ -42,7 +31,7 @@ class StepRecord:
     run_id     -- incremented on every dispatch (retry or set-branch reset)
     """
 
-    id: str
+    op: str
     status: StepStatus = StepStatus.READY
     output: dict | None = None
     start_time: str | None = None
@@ -61,7 +50,7 @@ class WorkflowRecord:
     spec         -- parsed workflow definition (immutable after create)
     inputs       -- workflow-level inputs (immutable after create)
     state        -- mutable shared accumulator
-    steps        -- dict[step_id -> StepRecord]
+    steps        -- dict[op -> StepRecord]
     status       -- current workflow lifecycle status
     outcome      -- resolved outputs on completion, branch payload on halt
     """
