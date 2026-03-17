@@ -24,5 +24,6 @@ setup(
     ],
     extras_require={
         "dev": ["pytest", "setuptools-scm", "pytest-cov", "mutmut"],
+        "aws": ["boto3", "dynawrap"],
     },
 )

@@ -1,34 +1,23 @@
 """
-runner.py -- Runner
+inprocess_worker.py -- InProcessWorker
 
-Two primitives:
+Local worker harness for InProcessRunner. Mirrors the SqliteRunner worker
+protocol using the runner's internal dicts in place of the tasks table.
+The executor remains a plain callable with no runfox dependency.
 
-  dispatch(workflow_execution_id, jobs) -> None
-  gather(workflow_execution_id) -> list[tuple[str, dict]]
+Equivalent remote pattern
+-------------------------
+This harness:
+    for job in runner.take_pending_jobs():
+        output = executor(job.op, job.inputs)
+        runner.submit_work_result(job.workflow_execution_id, job.op, output)
 
-gather() always returns immediately. Returns an empty list if no results
-are ready. The runner never calls on_step_result; Workflow.run() does that.
-
-The runner is a job queue. dispatch() enqueues; gather() dequeues results.
-The caller drives execution between those two calls -- a local function, a
-thread, a Lambda, an SQS consumer. The executor (fn, inputs -> dict) has
-no runfox dependency regardless of which runner is used.
-
-InProcessRunner -- dict-backed queue. Semantically identical to SqliteRunner;
-                   the dict is the tasks table. Use InProcessWorker to drive
-                   local execution against it.
-
-SqliteRunner    -- SQLite tasks-table queue. An external worker owns execution.
-                   See worker protocol in class docstring.
-
-InProcessWorker -- local worker harness for InProcessRunner. Mirrors the
-                   SqliteRunner worker protocol. The executor remains a plain
-                   callable with no runfox dependency.
+SQS/Lambda equivalent:
+    message = sqs.receive()
+    output  = executor(message.op, message.inputs)
+    dynamodb.update(task_key, output, status="COMPLETE")
 """
 
-import datetime
-import json
-import sqlite3
 from typing import Callable
 
 from .inprocess_runner import InProcessRunner
@@ -41,18 +30,6 @@ class InProcessWorker:
     Mirrors the SqliteRunner worker protocol using the runner's internal
     dicts in place of the tasks table. The executor remains a plain callable
     with no runfox dependency.
-
-    Equivalent remote pattern
-    -------------------------
-    This harness:
-        for job in runner.pending(wf_exec_id):
-            output = executor(job.op, job.inputs)
-            runner.submit_work_result(wf_exec_id, job.step_id, output)
-
-    SQS/Lambda equivalent:
-        message = sqs.receive()
-        output  = executor(message.fn, message.inputs)
-        dynamodb.put(task_key, output, status="COMPLETE")
     """
 
     def __init__(self, runner: InProcessRunner, executor: Callable[[str, dict], dict]):

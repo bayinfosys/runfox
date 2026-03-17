@@ -43,7 +43,7 @@ each result arrives.
 
 import copy
 import datetime
-import time  # add alongside existing imports
+import time
 from typing import Any
 
 import yaml
@@ -229,7 +229,9 @@ def _evaluate_branches(
     return None, None
 
 
-def _find_transitive_dependents(record: WorkflowRecord, seed_ops: list[str]) -> list[str]:
+def _find_transitive_dependents(
+    record: WorkflowRecord, seed_ops: list[str]
+) -> list[str]:
     """
     Return all step ops that transitively depend on any op in seed_ops.
 
@@ -343,7 +345,7 @@ class Workflow:
                     op=step_spec["op"],
                     inputs=resolved,
                     run_id=step.run_id,
-                 )
+                )
             )
 
         return Dispatch(jobs=jobs)

@@ -1,23 +1,23 @@
 """
-store.py -- Store
+sqlite_store.py -- SqliteStore
 
-Two primitives:
+Manages the workflows table. The tasks table belongs to SqliteRunner.
+SqliteStore and SqliteRunner may share the same db_path; they do not
+call each other.
 
-  load(workflow_execution_id) -> WorkflowRecord
-  write(record) -> None
-
-Implementations: InMemoryStore, SqliteStore.
-SqliteStore manages the workflows table only. The tasks table belongs to SqliteRunner.
+Store pattern
+-------------
+Store owns the workflow table -- long-term, one record per
+workflow_execution_id, holds the full serialised WorkflowRecord.
+Serialisation delegates to WorkflowRecord.to_dict() / from_dict().
 """
 
-import copy
-import dataclasses
 import json
 import sqlite3
 
-from runfox.status import StepStatus, WorkflowStatus
+from runfox.status import WorkflowStatus
 
-from .base import StepRecord, WorkflowRecord
+from .models import StepRecord, WorkflowRecord
 from .store import Store
 
 
@@ -61,18 +61,7 @@ class SqliteStore(Store):
 
     def _row_to_record(self, row: sqlite3.Row) -> WorkflowRecord:
         raw_steps = json.loads(row["steps"])
-        steps = {
-            op: StepRecord(
-                op=op,
-                status=StepStatus(s["status"]),
-                output=s.get("output"),
-                start_time=s.get("start_time"),
-                end_time=s.get("end_time"),
-                host=s.get("host"),
-                run_id=s.get("run_id", 0),
-            )
-            for op, s in raw_steps.items()
-        }
+        steps = {op: StepRecord.from_dict(s) for op, s in raw_steps.items()}
         return WorkflowRecord(
             workflow_id=row["workflow_id"],
             execution_id=row["execution_id"],
@@ -95,6 +84,7 @@ class SqliteStore(Store):
 
     def write(self, record: WorkflowRecord) -> None:
         key = f"{record.workflow_id}#{record.execution_id}"
+        d = record.to_dict()
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO workflows "
@@ -102,15 +92,13 @@ class SqliteStore(Store):
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     key,
-                    record.workflow_id,
-                    record.execution_id,
-                    json.dumps(record.spec),
-                    json.dumps(record.inputs),
-                    json.dumps(record.state),
-                    json.dumps(
-                        {op: dataclasses.asdict(s) for op, s in record.steps.items()}
-                    ),
-                    record.status,
-                    json.dumps(record.outcome) if record.outcome is not None else None,
+                    d["workflow_id"],
+                    d["execution_id"],
+                    json.dumps(d["spec"]),
+                    json.dumps(d["inputs"]),
+                    json.dumps(d["state"]),
+                    json.dumps(d["steps"]),
+                    d["status"],
+                    json.dumps(d["outcome"]) if d["outcome"] is not None else None,
                 ],
             )

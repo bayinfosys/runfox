@@ -1,23 +1,20 @@
 """
-store.py -- Store
+inmemory_store.py -- InMemoryStore
 
-Two primitives:
+Dict-backed store for local and test use. load() returns a deep copy
+isolated from the backing dict; write() stores a deep copy isolated from
+the caller. No persistence across process restarts.
 
-  load(workflow_execution_id) -> WorkflowRecord
-  write(record) -> None
-
-Implementations: InMemoryStore, SqliteStore.
-SqliteStore manages the workflows table only. The tasks table belongs to SqliteRunner.
+Runner pattern
+--------------
+InMemoryStore owns a single dict as its workflow table, keyed by
+workflow_execution_id. This is the long-term authoritative store for
+workflow state within a process.
 """
 
 import copy
-import dataclasses
-import json
-import sqlite3
 
-from runfox.status import StepStatus, WorkflowStatus
-
-from .models import StepRecord, WorkflowRecord
+from .models import WorkflowRecord
 from .store import Store
 
 

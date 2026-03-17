@@ -1,59 +1,38 @@
 """
-sqlite_runner.py -- Runner for sqlite
+sqlite_runner.py -- SqliteRunner
 
-Two primitives:
+SQLite tasks-table runner. dispatch() inserts PENDING rows. An external
+worker claims and executes them, writing COMPLETE or ERROR back. gather()
+reads COMPLETE/ERROR rows, marks them PROCESSED, and returns (op, output)
+pairs.
 
-  dispatch(workflow_execution_id, jobs) -> None
-  gather(workflow_execution_id) -> list[tuple[str, dict]]
+Runner pattern
+--------------
+SqliteRunner owns the tasks table -- short-term, one row per dispatched
+step. SqliteStore owns the workflows table -- long-term, one record per
+workflow_execution_id. They may share the same .db file; they use
+separate tables and do not call each other.
 
-gather() always returns immediately. Returns an empty list if no results
-are ready. The runner never calls on_step_result; Workflow.run() does that.
-
-The runner is a job queue. dispatch() enqueues; gather() dequeues results.
-The caller drives execution between those two calls -- a local function, a
-thread, a Lambda, an SQS consumer. The executor (fn, inputs -> dict) has
-no runfox dependency regardless of which runner is used.
-
-InProcessRunner -- dict-backed queue. Semantically identical to SqliteRunner;
-                   the dict is the tasks table. Use InProcessWorker to drive
-                   local execution against it.
-
-SqliteRunner    -- SQLite tasks-table queue. An external worker owns execution.
-                   See worker protocol in class docstring.
-
-InProcessWorker -- local worker harness for InProcessRunner. Mirrors the
-                   SqliteRunner worker protocol. The executor remains a plain
-                   callable with no runfox dependency.
+Worker protocol
+---------------
+1. SELECT * FROM tasks WHERE status = 'PENDING' LIMIT 1
+2. UPDATE tasks SET status = 'STARTED', updated_at = ?
+   WHERE task_key = ? AND status = 'PENDING'
+3. Execute op(inputs).
+4. UPDATE tasks SET status = 'COMPLETE', output = ?, updated_at = ?
+   WHERE task_key = ?
+   -- or ERROR on failure
 """
 
 import datetime
 import json
 import sqlite3
-from typing import Callable
 
 from ..results import DispatchJob
 from .runner import Runner
 
 
 class SqliteRunner(Runner):
-    """
-    SQLite tasks-table runner.
-
-    dispatch() inserts PENDING rows. An external worker (outside runfox)
-    claims and executes them, writing COMPLETE or ERROR back. gather() reads
-    COMPLETE/ERROR rows, marks them PROCESSED, and returns (op, output)
-    pairs. Returns an empty list if no rows are ready. Workflow.run() polls.
-
-    Worker protocol
-    ---------------
-    1. SELECT * FROM tasks WHERE status = 'PENDING' LIMIT 1
-    2. UPDATE tasks SET status = 'STARTED', updated_at = ?
-       WHERE task_key = ? AND status = 'PENDING'
-    3. Execute fn(inputs).
-    4. UPDATE tasks SET status = 'COMPLETE', output = ?, updated_at = ?
-       WHERE task_key = ?
-       -- or ERROR on failure
-    """
 
     def __init__(self, db_path: str, poll_interval: float = 0.1):
         self._db_path = db_path
@@ -96,7 +75,7 @@ class SqliteRunner(Runner):
             run_id=int(row["task_key"].rsplit("#", 1)[-1]),
         )
 
-    def dispatch(self, workflow_execution_id: str, jobs: list) -> None:
+    def dispatch(self, workflow_execution_id: str, jobs: list) -> list:
         now = self._now_iso()
         with self._connect() as conn:
             for job in jobs:
@@ -113,6 +92,7 @@ class SqliteRunner(Runner):
                         now,
                     ],
                 )
+        return []
 
     def gather(self, workflow_execution_id: str) -> list:
         with self._connect() as conn:

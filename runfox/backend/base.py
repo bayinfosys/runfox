@@ -32,6 +32,7 @@ from .inprocess_runner import InProcessRunner
 from .inprocess_worker import InProcessWorker
 from .inmemory_store import InMemoryStore
 
+
 class Backend:
 
     def __init__(
@@ -43,8 +44,13 @@ class Backend:
         on_state_change=None,
     ):
         """
-        on_state_change: optional callback fired after every state merge.
-            Signature: (workflow_execution_id, previous_state, new_state) -> None.
+        Composes a Store and a Runner into a single workflow backend.
+
+        store:            Store implementation. Defaults to InMemoryStore.
+        runner:           Runner implementation. Defaults to InProcessRunner.
+        poll_interval:    Seconds to sleep between gather() polls in run().
+        on_state_change:  Optional callback fired after every state merge.
+            Signature: (workflow_execution_id, previous_state, new_state, event) -> None.
             Must be pure: no side effects, no exceptions, no backend calls.
             The callback fires inside a write cycle; any mutation of backend
             state from within it will produce inconsistent records.
@@ -117,7 +123,8 @@ class Backend:
             inputs=inputs or {},
             state={},
             steps={
-                step["op"]: self._make_step_record(step["op"]) for step in spec["steps"]
+                step["op"]: self._make_step_record(step["op"])
+                for step in spec["steps"]
             },
             status=WorkflowStatus.PENDING,
         )
@@ -206,7 +213,6 @@ class Backend:
         self._store.write(dataclasses.replace(record, state=new_state))
 
     def write_workflow_outcome(self, workflow_execution_id: str, outcome: Any) -> None:
-        """send the result of the workflow to the store for writing"""
         record = self._store.load(workflow_execution_id)
         status = (
             WorkflowStatus.HALTED
@@ -252,8 +258,13 @@ class Backend:
     # Runner pass-throughs
     # ------------------------------------------------------------------
 
-    def dispatch(self, workflow_execution_id: str, jobs: list) -> None:
-        self._runner.dispatch(workflow_execution_id, jobs)
+    def dispatch(self, workflow_execution_id: str, jobs: list) -> list:
+        """
+        Enqueue jobs via the runner. Returns any (op, output) pairs for
+        jobs executed locally by the runner. Callers must feed returned
+        pairs to on_step_result() before calling advance().
+        """
+        return self._runner.dispatch(workflow_execution_id, jobs)
 
     def gather(self, workflow_execution_id: str) -> list:
         return self._runner.gather(workflow_execution_id)

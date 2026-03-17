@@ -1,43 +1,39 @@
 """
-runner.py -- Runner
+runner.py -- Runner base class.
 
-Two primitives:
+Runner pattern
+--------------
+Runner owns the tasks table -- short-term, one row per dispatched step,
+holds status and output until gathered. dispatch() enqueues jobs.
+submit_work_result() writes results. gather() dequeues results.
 
-  dispatch(workflow_execution_id, jobs) -> None
-  gather(workflow_execution_id) -> list[tuple[str, dict]]
+There is no requirement that Store and Runner use the same physical
+storage. SqliteStore and SqliteRunner share a .db file by convention
+(separate tables within it). DynamoDBStore and SQSRunner use separate
+DynamoDB tables. InMemoryStore and InProcessRunner use separate dicts.
 
-gather() always returns immediately. Returns an empty list if no results
-are ready. The runner never calls on_step_result; Workflow.run() does that.
-
-The runner is a job queue. dispatch() enqueues; gather() dequeues results.
-The caller drives execution between those two calls -- a local function, a
-thread, a Lambda, an SQS consumer. The executor (fn, inputs -> dict) has
-no runfox dependency regardless of which runner is used.
-
-InProcessRunner -- dict-backed queue. Semantically identical to SqliteRunner;
-                   the dict is the tasks table. Use InProcessWorker to drive
-                   local execution against it.
-
-SqliteRunner    -- SQLite tasks-table queue. An external worker owns execution.
-                   See worker protocol in class docstring.
-
-InProcessWorker -- local worker harness for InProcessRunner. Mirrors the
-                   SqliteRunner worker protocol. The executor remains a plain
-                   callable with no runfox dependency.
+For runners that dispatch to an external queue (SQS, etc.) there is no
+in-band return channel. gather() reads from the runner's own tasks table,
+which workers write to via submit_work_result(). The tasks table is
+runner-owned short-term state; the workflow table is store-owned
+long-term state. They are always logically distinct even when the same
+storage technology is used for both.
 """
-
-import datetime
-import json
-import sqlite3
-from typing import Callable
-
-from ..results import DispatchJob
 
 
 class Runner:
 
-    def dispatch(self, workflow_execution_id: str, jobs: list) -> None:
-        """Enqueue jobs. jobs is a list of DispatchJob."""
+    def dispatch(self, workflow_execution_id: str, jobs: list) -> list:
+        """
+        Enqueue jobs. jobs is a list of DispatchJob.
+
+        Returns a list of (op, output) pairs for any jobs executed
+        locally by this runner rather than submitted to an external queue.
+        Returns an empty list if all jobs were enqueued externally.
+
+        Callers must feed any returned pairs to on_step_result() before
+        calling advance().
+        """
         raise NotImplementedError
 
     def gather(self, workflow_execution_id: str) -> list:

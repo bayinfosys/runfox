@@ -1,31 +1,21 @@
 """
-store.py -- Store
+store.py -- Store base class.
 
-Two primitives:
+Store pattern
+-------------
+Store owns the workflow table -- long-term, one record per
+workflow_execution_id, holds the full serialised WorkflowRecord.
 
-  load(workflow_execution_id) -> WorkflowRecord
-  write(record) -> None
-
-Implementations: InMemoryStore, SqliteStore.
-SqliteStore manages the workflows table only. The tasks table belongs to SqliteRunner.
+Implementations: InMemoryStore, SqliteStore, DynamoDBStore.
 """
-
-import copy
-import dataclasses
-import json
-import sqlite3
-
-from runfox.status import StepStatus, WorkflowStatus
-
-from .base import StepRecord, WorkflowRecord
 
 
 class Store:
 
-    def load(self, workflow_execution_id: str) -> WorkflowRecord:
+    def load(self, workflow_execution_id: str):
         """Return a value isolated from the backing store. Raises KeyError if not found."""
         raise NotImplementedError
 
-    def write(self, record: WorkflowRecord) -> None:
+    def write(self, record) -> None:
         """Persist a value isolated from the caller."""
         raise NotImplementedError
