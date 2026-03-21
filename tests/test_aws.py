@@ -70,17 +70,18 @@ class FakeDDBClient:
 # ---------------------------------------------------------------------------
 
 
-def make_runner(sqs=None, ddb=None):
+def make_runner(sqs=None, ddb=None, queue_url="https://sqs.example.com/test-queue", message_body_fn=None):
     return SQSRunner(
-        queue_map={"instruct": "https://sqs.example.com/test-queue"},
         tasks_table="test-tasks",
+        queue_url=queue_url,
         sqs_client=sqs or FakeSQSClient(),
         ddb_client=ddb or FakeDDBClient(),
+        message_body_fn=message_body_fn,
     )
 
 
-def make_job(op="step1", model_type="instruct", run_id=0, extra_inputs=None):
-    inputs = {"model_type": model_type, "model_name": "gpt-4"}
+def make_job(op="step1", run_id=0, extra_inputs=None):
+    inputs = {"model_type": "instruct", "model_name": "some-model"}
     if extra_inputs:
         inputs.update(extra_inputs)
     return DispatchJob(
@@ -92,7 +93,7 @@ def make_job(op="step1", model_type="instruct", run_id=0, extra_inputs=None):
 
 
 # ---------------------------------------------------------------------------
-# Input guards -- no client calls needed
+# Input guards
 # ---------------------------------------------------------------------------
 
 
@@ -102,21 +103,13 @@ class TestSQSRunnerGuards:
         sqs = FakeSQSClient()
         runner = make_runner(sqs=sqs)
         job = make_job(extra_inputs={"image": b"binary"})
-        with pytest.raises(NotImplementedError, match="S3 staging"):
-            runner.dispatch("abc#exec1", [job])
-        assert sqs.sent == []
-
-    def test_unknown_model_type_raises_before_sqs_call(self):
-        sqs = FakeSQSClient()
-        runner = make_runner(sqs=sqs)
-        job = make_job(model_type="unknown-type")
-        with pytest.raises(ValueError, match="No SQS queue configured"):
+        with pytest.raises(NotImplementedError):
             runner.dispatch("abc#exec1", [job])
         assert sqs.sent == []
 
 
 # ---------------------------------------------------------------------------
-# dispatch -- return value and SQS message body
+# dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -133,33 +126,6 @@ class TestSQSRunnerDispatch:
         runner.dispatch("abc#exec1", [make_job("s1"), make_job("s2")])
         assert len(sqs.sent) == 2
 
-    def test_message_body_contains_model_name(self):
-        sqs = FakeSQSClient()
-        runner = make_runner(sqs=sqs)
-        runner.dispatch("abc#exec1", [make_job()])
-        body = json.loads(sqs.sent[0]["MessageBody"])
-        assert body["model_name"] == "gpt-4"
-
-    def test_message_id_format(self):
-        sqs = FakeSQSClient()
-        runner = make_runner(sqs=sqs)
-        runner.dispatch("abc#exec1", [make_job(op="step1", run_id=2)])
-        body = json.loads(sqs.sent[0]["MessageBody"])
-        assert body["message_id"] == "WORKFLOW#abc#exec1#step1#2"
-
-    def test_message_sent_to_correct_queue(self):
-        sqs = FakeSQSClient()
-        runner = make_runner(sqs=sqs)
-        runner.dispatch("abc#exec1", [make_job(model_type="instruct")])
-        assert sqs.sent[0]["QueueUrl"] == "https://sqs.example.com/test-queue"
-
-    def test_model_type_not_in_message_body(self):
-        sqs = FakeSQSClient()
-        runner = make_runner(sqs=sqs)
-        runner.dispatch("abc#exec1", [make_job()])
-        body = json.loads(sqs.sent[0]["MessageBody"])
-        assert "model_type" not in body
-
     def test_dispatch_writes_pending_task_to_ddb(self):
         ddb = FakeDDBClient()
         runner = make_runner(ddb=ddb)
@@ -169,39 +135,75 @@ class TestSQSRunnerDispatch:
 
 
 # ---------------------------------------------------------------------------
-# Prompt template
+# queue_url -- str and callable forms
 # ---------------------------------------------------------------------------
 
 
-class TestSQSRunnerPromptTemplate:
+class TestSQSRunnerQueueUrl:
 
-    def test_prompt_template_rendered_into_prompt_field(self):
+    def test_string_queue_url_used_directly(self):
+        sqs = FakeSQSClient()
+        runner = make_runner(sqs=sqs, queue_url="https://sqs.example.com/fixed-queue")
+        runner.dispatch("abc#exec1", [make_job()])
+        assert sqs.sent[0]["QueueUrl"] == "https://sqs.example.com/fixed-queue"
+
+    def test_callable_queue_url_receives_job(self):
+        sqs = FakeSQSClient()
+        received = []
+
+        def queue_url_fn(job):
+            received.append(job)
+            return "https://sqs.example.com/dynamic-queue"
+
+        runner = make_runner(sqs=sqs, queue_url=queue_url_fn)
+        job = make_job()
+        runner.dispatch("abc#exec1", [job])
+        assert len(received) == 1
+        assert received[0] is job
+        assert sqs.sent[0]["QueueUrl"] == "https://sqs.example.com/dynamic-queue"
+
+    def test_callable_queue_url_exception_propagates(self):
+        runner = make_runner(queue_url=lambda job: (_ for _ in ()).throw(RuntimeError("routing error")))
+        with pytest.raises(RuntimeError, match="routing error"):
+            runner.dispatch("abc#exec1", [make_job()])
+
+
+# ---------------------------------------------------------------------------
+# message body
+# ---------------------------------------------------------------------------
+
+
+class TestSQSRunnerMessageBody:
+
+    def test_default_body_uses_job_as_dict(self):
         sqs = FakeSQSClient()
         runner = make_runner(sqs=sqs)
-        job = make_job(extra_inputs={
-            "prompt_template": "Summarise: {text}",
-            "text": "hello world",
-        })
-        runner.dispatch("abc#exec1", [job])
+        runner.dispatch("abc#exec1", [make_job(op="step1", run_id=3)])
         body = json.loads(sqs.sent[0]["MessageBody"])
-        assert body["prompt"] == "Summarise: hello world"
+        # job.as_dict() should include at minimum op and run_id
+        assert body["op"] == "step1"
+        assert body["run_id"] == 3
 
-    def test_prompt_template_key_removed_from_body(self):
+    def test_message_body_fn_used_when_provided(self):
         sqs = FakeSQSClient()
-        runner = make_runner(sqs=sqs)
-        job = make_job(extra_inputs={
-            "prompt_template": "Say: {text}",
-            "text": "hi",
-        })
-        runner.dispatch("abc#exec1", [job])
-        body = json.loads(sqs.sent[0]["MessageBody"])
-        assert "prompt_template" not in body
 
-    def test_no_prompt_template_sends_inputs_directly(self):
-        sqs = FakeSQSClient()
-        runner = make_runner(sqs=sqs)
-        job = make_job(extra_inputs={"text": "hello"})
-        runner.dispatch("abc#exec1", [job])
+        def custom_body(job, workflow_execution_id):
+            return {"custom": True, "op": job.op}
+
+        runner = make_runner(sqs=sqs, message_body_fn=custom_body)
+        runner.dispatch("abc#exec1", [make_job(op="mystep")])
         body = json.loads(sqs.sent[0]["MessageBody"])
-        assert "prompt" not in body
-        assert body["text"] == "hello"
+        assert body == {"custom": True, "op": "mystep"}
+
+    def test_message_body_fn_exception_propagates(self):
+        def bad_body(job, wf_id):
+            raise ValueError("bad body")
+
+        runner = make_runner(message_body_fn=bad_body)
+        with pytest.raises(ValueError, match="bad body"):
+            runner.dispatch("abc#exec1", [make_job()])
+
+    def test_non_serialisable_body_raises(self):
+        runner = make_runner(message_body_fn=lambda job, wf_id: {"data": object()})
+        with pytest.raises((TypeError, ValueError)):
+            runner.dispatch("abc#exec1", [make_job()])

@@ -52,6 +52,7 @@ mask-diff and kmeans compute steps are not yet implemented.
 import dataclasses
 import datetime
 import json
+import logging
 from typing import ClassVar
 
 import boto3
@@ -62,12 +63,12 @@ from runfox.backend.runner import Runner
 from runfox.backend.store import Store
 from runfox.results import DispatchJob
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # DynamoDB item types
 # ---------------------------------------------------------------------------
 
-import dataclasses
 
 @dataclasses.dataclass
 class WorkflowStateItem(DBItem):
@@ -162,50 +163,92 @@ class SQSRunner(Runner):
     """
     SQS-dispatch runner with a DynamoDB tasks table.
 
-    Runner pattern: owns the tasks table (short-term, one item per
-    dispatched step). dispatch() inserts PENDING task items and sends
-    SQS messages. submit_work_result() updates task items to COMPLETE.
-    gather() returns COMPLETE items and marks them PROCESSED.
+    Owns the tasks table: one item per dispatched step, written at
+    dispatch time and updated to COMPLETE when the result arrives.
 
-    queue_map:   {model_type: sqs_queue_url}
-    tasks_table: DynamoDB table name for the runner-owned tasks table.
-    sqs_client:  optional pre-constructed boto3 SQS client.
-    ddb_client:  optional pre-constructed boto3 DynamoDB client.
+    queue_url is either a fixed string (single-queue deployments) or a
+    callable that receives a DispatchJob and returns a queue URL string
+    (multi-queue deployments). The callable form allows routing logic to
+    be supplied by the caller without subclassing.
+
+    message_body_fn, if provided, receives a DispatchJob and a
+    workflow_execution_id string and returns a JSON-serialisable dict.
+    When not provided, job.asdict() is used. Override get_message_body()
+    in a subclass for more structured control.
+
+    Both queue resolution and body construction are wrapped with exception
+    logging. JSON serialisation failure is caught and logged separately.
+    Binary input values (bytes, bytearray) are rejected before any AWS
+    call; callers must pass binary data as S3 reference dicts.
     """
 
     def __init__(
         self,
-        queue_map: dict,
         tasks_table: str,
+        queue_url,  # str or callable
         sqs_client=None,
         ddb_client=None,
+        message_body_fn=None,
     ):
-        self._queue_map = queue_map
         self._tasks_table = tasks_table
         self._sqs = sqs_client or boto3.client("sqs")
         self._ddb = ddb_client or boto3.client("dynamodb")
+        self._queue_url = queue_url
+        self._message_body_fn = message_body_fn
 
     def _now_iso(self) -> str:
         return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    # ------------------------------------------------------------------
-    # Runner interface
-    # ------------------------------------------------------------------
+    def get_message_body(self, job: DispatchJob, workflow_execution_id: str) -> dict:
+        """create a message for sqs using the job context"""
+        if self._message_body_fn is not None:
+            return self._message_body_fn(job, workflow_execution_id)
+        return dataclasses.asdict(job)
+
+    def _submit_to_sqs(self, job: DispatchJob, workflow_execution_id: str) -> None:
+        for key, value in job.inputs.items():
+            if isinstance(value, (bytes, bytearray)):
+                raise NotImplementedError(
+                    f"Binary input {key!r} in step {job.op!r} is not supported. "
+                    "Pass binary data as a reference dict."
+                )
+
+        try:
+            queue_url = (
+                self._queue_url
+                if isinstance(self._queue_url, str)
+                else self._queue_url(job)
+            )
+        except Exception:
+            logger.exception("get_queue_url failed for op=%s", job.op)
+            raise
+
+        try:
+            body = self.get_message_body(job, workflow_execution_id)
+        except Exception:
+            logger.exception("get_message_body failed for op=%s", job.op)
+            raise
+
+        try:
+            message_body = json.dumps(body)
+        except (TypeError, ValueError):
+            logger.exception("message body is not JSON-serialisable for op=%s", job.op)
+            raise
+
+        self._sqs.send_message(
+            QueueUrl=queue_url,
+            MessageBody=message_body,
+        )
 
     def dispatch(self, workflow_execution_id: str, jobs: list) -> list:
-        """
-        Write a PENDING task item to the tasks table and send an SQS
-        message for each job. Returns an empty list; all dispatch is
-        external.
-        """
         for job in jobs:
             for key, value in job.inputs.items():
                 if isinstance(value, (bytes, bytearray)):
                     raise NotImplementedError(
-                        f"Binary input {key!r} in step {job.op!r} requires "
-                        "S3 staging, which is not yet implemented. "
-                        "Pass binary data as S3 reference dicts between steps."
+                        f"Binary input {key!r} in step {job.op!r} is not supported. "
+                        "Pass binary data as a reference dict."
                     )
+
         now = self._now_iso()
         for job in jobs:
             item = WorkflowTaskItem(
@@ -213,7 +256,7 @@ class SQSRunner(Runner):
                 op=job.op,
                 run_id=job.run_id,
                 inputs_json=json.dumps(job.inputs),
-                status="PENDING",
+                status="PENDING",  # TODO: replace with a constant
                 created_at=now,
             )
             self._ddb.put_item(
@@ -222,131 +265,3 @@ class SQSRunner(Runner):
             )
             self._submit_to_sqs(job, workflow_execution_id)
         return []
-
-    def gather(self, workflow_execution_id: str) -> list:
-        """
-        Query the tasks table for COMPLETE or ERROR items. Marks each
-        PROCESSED and returns (op, output) pairs.
-        """
-        response = self._ddb.query(
-            TableName=self._tasks_table,
-            KeyConditionExpression="pk = :pk",
-            FilterExpression="#s IN (:c, :e)",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":pk": {"S": f"TASK#{workflow_execution_id}"},
-                ":c":  {"S": "COMPLETE"},
-                ":e":  {"S": "ERROR"},
-            },
-        )
-        pairs = []
-        for raw in response.get("Items", []):
-            task = WorkflowTaskItem.from_dynamo_item(raw)
-            output = json.loads(task.output_json) if task.output_json else {}
-            pairs.append((task.op, output))
-            key = WorkflowTaskItem.create_item_key(
-                workflow_execution_id=workflow_execution_id,
-                op=task.op,
-                run_id=task.run_id,
-            )
-            self._ddb.update_item(
-                TableName=self._tasks_table,
-                Key=key,
-                UpdateExpression="SET #s = :p, updated_at = :t",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={
-                    ":p": {"S": "PROCESSED"},
-                    ":t": {"S": self._now_iso()},
-                },
-            )
-        return pairs
-
-    def list_pending_jobs(self) -> list:
-        # Workers receive jobs from SQS directly. The tasks table is not
-        # the authoritative pending-job queue.
-        return []
-
-    def take_pending_jobs(self) -> list:
-        # Workers receive jobs from SQS directly. See list_pending_jobs.
-        return []
-
-    def submit_work_result(
-        self, workflow_execution_id: str, op: str, output: dict
-    ) -> None:
-        """
-        Update the PENDING task item for (workflow_execution_id, op) to
-        COMPLETE with the given output.
-
-        Queries with begins_with(sk, op+"#") since the base class
-        signature carries no run_id. There is at most one non-PROCESSED
-        task per (wf_exec_id, op) at any time.
-        """
-        response = self._ddb.query(
-            TableName=self._tasks_table,
-            KeyConditionExpression="pk = :pk AND begins_with(sk, :op_prefix)",
-            FilterExpression="#s = :pending",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":pk":        {"S": f"TASK#{workflow_execution_id}"},
-                ":op_prefix": {"S": f"{op}#"},
-                ":pending":   {"S": "PENDING"},
-            },
-        )
-        items = response.get("Items", [])
-        if not items:
-            return
-        task = WorkflowTaskItem.from_dynamo_item(items[0])
-        key = WorkflowTaskItem.create_item_key(
-            workflow_execution_id=workflow_execution_id,
-            op=task.op,
-            run_id=task.run_id,
-        )
-        self._ddb.update_item(
-            TableName=self._tasks_table,
-            Key=key,
-            UpdateExpression="SET #s = :c, output_json = :o, updated_at = :t",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":c": {"S": "COMPLETE"},
-                ":o": {"S": json.dumps(output)},
-                ":t": {"S": self._now_iso()},
-            },
-        )
-
-    # ------------------------------------------------------------------
-    # SQS submission
-    # ------------------------------------------------------------------
-
-    def _submit_to_sqs(self, job: DispatchJob, workflow_execution_id: str) -> None:
-        inputs = dict(job.inputs)
-
-        model_type = inputs.pop("model_type")
-        model_name = inputs.pop("model_name")
-        prompt_template = inputs.pop("prompt_template", None)
-
-        if prompt_template is not None:
-            template_vars = {
-                k: v for k, v in inputs.items()
-                if "{" + k + "}" in prompt_template
-            }
-            inputs["prompt"] = prompt_template.format(**template_vars)
-
-        queue_url = self._queue_map.get(model_type)
-        if queue_url is None:
-            raise ValueError(
-                f"No SQS queue configured for model_type {model_type!r}. "
-                f"Available types: {list(self._queue_map)}"
-            )
-
-        message_id = f"WORKFLOW#{workflow_execution_id}#{job.op}#{job.run_id}"
-
-        body = {
-            "model_name": model_name,
-            "message_id": message_id,
-            **inputs,
-        }
-
-        self._sqs.send_message(
-            QueueUrl=queue_url,
-            MessageBody=json.dumps(body),
-        )
