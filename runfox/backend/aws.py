@@ -130,16 +130,11 @@ class DynamoDBStore(Store):
         self._client = client or boto3.client("dynamodb")
 
     def load(self, workflow_execution_id: str) -> WorkflowRecord:
-        key = WorkflowStateItem.create_item_key(
-            workflow_execution_id=workflow_execution_id
+        item = WorkflowStateItem.read(
+            self._client,
+            self._table,
+            workflow_execution_id=workflow_execution_id,
         )
-        response = self._client.get_item(
-            TableName=self._table,
-            Key=key,
-        )
-        if "Item" not in response:
-            raise KeyError(workflow_execution_id)
-        item = WorkflowStateItem.from_dynamo_item(response["Item"])
         return WorkflowRecord.from_dict(json.loads(item.record_json))
 
     def write(self, record: WorkflowRecord) -> None:
