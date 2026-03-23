@@ -120,18 +120,47 @@ def _make_context(record: WorkflowRecord) -> dict:
 
 
 def _resolve_value(value: Any, context: dict) -> Any:
+    """
+    Resolve a single value against the workflow context.
+
+    JSON Logic expressions are evaluated against the context and replaced
+    with their result. Plain dicts are recursed into so that nested
+    structures containing JSON Logic expressions are fully resolved.
+    All other values are returned unchanged.
+    """
     if isinstance(value, dict) and is_logic(value):
         return jsonLogic(value, copy.deepcopy(context))
+    if isinstance(value, dict):
+        return {k: _resolve_value(v, context) for k, v in value.items()}
     return value
 
 
 def _resolve_inputs(step_spec: dict, record: WorkflowRecord) -> dict:
+    """
+    Resolve the input dict for a step spec against the current workflow state.
+
+    Reads the 'input' key from the step spec and resolves each value against
+    a context built from completed step outputs, workflow-level inputs, and
+    shared state. Returns a dict of fully resolved input values ready for
+    dispatch.
+
+    Steps with no 'input' key return an empty dict.
+    """
     spec_inputs = step_spec.get("input") or {}
     context = _make_context(record)
     return {key: _resolve_value(value, context) for key, value in spec_inputs.items()}
 
 
 def _resolve_outputs(record: WorkflowRecord) -> dict:
+    """
+    Resolve the workflow-level output expressions against the final state.
+
+    Reads the 'outputs' key from the workflow spec and resolves each value
+    against the completed workflow context. Called at workflow completion to
+    produce the outcome dict written to the execution record.
+
+    Workflows with no 'outputs' key return an empty dict.
+    """
     spec_outputs = record.spec.get("outputs") or {}
     context = _make_context(record)
     return {key: _resolve_value(value, context) for key, value in spec_outputs.items()}
