@@ -218,8 +218,11 @@ class SQSRunner(Runner):
             logger.exception("get_queue_url failed for op=%s", job.op)
             raise
 
+        if queue_url is None:
+            logger.warning("queue_url None for %s", job.op)
+
         try:
-            body = self.get_message_body(job, workflow_execution_id)
+            body = self.get_message_body(job, workflow_execution_id) or {}
         except Exception:
             logger.exception("get_message_body failed for op=%s", job.op)
             raise
