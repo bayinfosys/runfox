@@ -467,3 +467,9 @@ examples/
 - [boto3](https://pypi.org/project/boto3/) -- AWS SDK (`runfox[aws]`)
 - [dynawrap](https://pypi.org/project/dynawrap/) -- DynamoDB item
   abstractions (`runfox[aws]`)
+
+---
+
+## Projects
+
+[Marigold](https://www.bayis.co.uk/marigold) -- typed inference pipelines over privately hosted open-weight models. Marigold uses runfox for workflow execution.
