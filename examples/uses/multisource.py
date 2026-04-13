@@ -26,36 +26,31 @@ import runfox as rfx
 
 # Simulated data sources, keyed by source name and entity id.
 DATA_STORE = {
-    "users": {42: {"id": 42, "name": "Alice", "joined": "2021-03-15"}},
-    "orders": {42: {"user_id": 42, "count": 3, "total": 198.50}},
+    "users":   {42: {"id": 42, "name": "Alice", "joined": "2021-03-15"}},
+    "orders":  {42: {"user_id": 42, "count": 3, "total": 198.50}},
     "profile": {42: {"user_id": 42, "tier": "gold", "region": "eu-west"}},
 }
-
 
 SPEC = """
 name: multi_source
 
 steps:
   - op: fetch_user
-    label: fetch
     input:
       source: users
       id:     {"var": "input.user_id"}
 
   - op: fetch_orders
-    label: fetch
     input:
       source: orders
       id:     {"var": "input.user_id"}
 
   - op: fetch_profile
-    label: fetch
     input:
       source: profile
       id:     {"var": "input.user_id"}
 
   - op: assemble
-    label: assemble
     depends_on: [fetch_user, fetch_orders, fetch_profile]
     input:
       user:    {"var": "steps.fetch_user.output.record"}
@@ -67,12 +62,17 @@ outputs:
 """
 
 
-def execute(label, inputs):
-    if label == "fetch":
-        record = DATA_STORE[inputs["source"]][inputs["id"]]
-        return {"record": record}
+def execute(op: str, inputs: dict) -> dict:
+    if op == "fetch_user":
+        return {"record": DATA_STORE["users"][inputs["id"]]}
 
-    if label == "assemble":
+    if op == "fetch_orders":
+        return {"record": DATA_STORE["orders"][inputs["id"]]}
+
+    if op == "fetch_profile":
+        return {"record": DATA_STORE["profile"][inputs["id"]]}
+
+    if op == "assemble":
         return {
             "record": {
                 **inputs["user"],

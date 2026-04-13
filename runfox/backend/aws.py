@@ -57,6 +57,7 @@ from typing import ClassVar
 
 import boto3
 from dynawrap import DBItem
+from dynawrap.backends.dynamodb import DynamoDBBackend
 
 from runfox.backend.models import WorkflowRecord
 from runfox.backend.runner import Runner
@@ -64,6 +65,7 @@ from runfox.backend.store import Store
 from runfox.results import DispatchJob
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # DynamoDB item types
@@ -127,14 +129,16 @@ class DynamoDBStore(Store):
 
     def __init__(self, table: str, client=None):
         self._table = table
-        self._client = client or boto3.client("dynamodb")
+        self._backend = DynamoDBBackend(client or boto3.client("dynamodb"))
 
     def load(self, workflow_execution_id: str) -> WorkflowRecord:
-        item = WorkflowStateItem.read(
-            self._client,
+        item = self._backend.get(
             self._table,
+            WorkflowStateItem,
             workflow_execution_id=workflow_execution_id,
         )
+        if item is None:
+            raise KeyError(workflow_execution_id)
         return WorkflowRecord.from_dict(json.loads(item.record_json))
 
     def write(self, record: WorkflowRecord) -> None:
@@ -143,10 +147,7 @@ class DynamoDBStore(Store):
             workflow_execution_id=wf_exec_id,
             record_json=json.dumps(record.to_dict()),
         )
-        self._client.put_item(
-            TableName=self._table,
-            Item=item.to_dynamo_item(),
-        )
+        self._backend.save(self._table, item)
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +188,7 @@ class SQSRunner(Runner):
     ):
         self._tasks_table = tasks_table
         self._sqs = sqs_client or boto3.client("sqs")
-        self._ddb = ddb_client or boto3.client("dynamodb")
+        self._backend = DynamoDBBackend(ddb_client or boto3.client("dynamodb"))
         self._queue_url = queue_url
         self._message_body_fn = message_body_fn
 
@@ -254,12 +255,9 @@ class SQSRunner(Runner):
                 op=job.op,
                 run_id=job.run_id,
                 inputs_json=json.dumps(job.inputs),
-                status="PENDING",  # TODO: replace with a constant
+                status="PENDING",
                 created_at=now,
             )
-            self._ddb.put_item(
-                TableName=self._tasks_table,
-                Item=item.to_dynamo_item(),
-            )
+            self._backend.save(self._tasks_table, item)
             self._submit_to_sqs(job, workflow_execution_id)
         return []

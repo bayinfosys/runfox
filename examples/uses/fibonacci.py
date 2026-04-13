@@ -21,45 +21,38 @@ description: >
 
 steps:
   - op: f0
-    label: seed
     input:
       value: 0
 
   - op: f1
-    label: seed
     input:
       value: 1
 
   - op: f2
-    label: add
     depends_on: [f0, f1]
     input:
       a: {"var": "steps.f0.output.value"}
       b: {"var": "steps.f1.output.value"}
 
   - op: f3
-    label: add
     depends_on: [f1, f2]
     input:
       a: {"var": "steps.f1.output.value"}
       b: {"var": "steps.f2.output.value"}
 
   - op: f4
-    label: add
     depends_on: [f2, f3]
     input:
       a: {"var": "steps.f2.output.value"}
       b: {"var": "steps.f3.output.value"}
 
   - op: f5
-    label: add
     depends_on: [f3, f4]
     input:
       a: {"var": "steps.f3.output.value"}
       b: {"var": "steps.f4.output.value"}
 
   - op: f6
-    label: add
     depends_on: [f4, f5]
     input:
       a: {"var": "steps.f4.output.value"}
@@ -72,19 +65,17 @@ outputs:
 # ---------------------------------------------------------------------------
 # Executor
 #
-# Receives (label, inputs), returns output dict.
+# Receives (op, inputs), returns output dict.
 # No runfox imports. No knowledge of workflow structure.
 # On AWS this would be an ECS task writing to DynamoDB.
 # ---------------------------------------------------------------------------
 
 
-def execute(label: str, inputs: dict) -> dict:
-    print(f"  execute: label={label!r}  inputs={inputs}")
-    if label == "seed":
-        return {"value": inputs["value"]}
-    if label == "add":
+def execute(op: str, inputs: dict) -> dict:
+    print(f"  execute: op={op!r}  inputs={inputs}")
+    if "a" in inputs and "b" in inputs:
         return {"value": inputs["a"] + inputs["b"]}
-    raise ValueError(f"Unknown label: {label!r}")
+    return {"value": inputs["value"]}
 
 
 # ---------------------------------------------------------------------------
